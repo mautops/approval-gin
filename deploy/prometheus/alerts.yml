@@ -1,0 +1,103 @@
+groups:
+  - name: approval_gin_alerts
+    interval: 30s
+    rules:
+      # API 错误率告警
+      - alert: HighErrorRate
+        expr: |
+          rate(api_requests_total{status=~"5.."}[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High API error rate detected"
+          description: "Error rate is {{ $value | humanizePercentage }} for the last 5 minutes"
+
+      # API 高延迟告警
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.95, rate(api_request_duration_seconds_bucket[5m])) > 1.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High API latency detected"
+          description: "95th percentile latency is {{ $value }}s (threshold: 1.0s)"
+
+      # 数据库连接失败告警
+      - alert: DatabaseConnectionFailure
+        expr: |
+          up{job="approval-gin"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database connection failure"
+          description: "Approval Gin service is down or database connection failed"
+
+      # 任务创建率过高告警
+      - alert: HighTaskCreationRate
+        expr: |
+          rate(tasks_created_total[5m]) > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High task creation rate"
+          description: "Task creation rate is {{ $value }} tasks/sec (threshold: 100/sec)"
+
+      # 审批失败率过高告警
+      - alert: HighApprovalFailureRate
+        expr: |
+          rate(approvals_total{action="reject"}[5m]) / rate(approvals_total[5m]) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High approval failure rate"
+          description: "Approval rejection rate is {{ $value | humanizePercentage }} (threshold: 50%)"
+
+      # 数据库连接池耗尽告警
+      - alert: DatabaseConnectionPoolExhausted
+        expr: |
+          (database_connections_active / database_connections_max) > 0.9
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database connection pool nearly exhausted"
+          description: "Connection pool usage is {{ $value | humanizePercentage }} (threshold: 90%)"
+
+      # 内存使用率过高告警
+      - alert: HighMemoryUsage
+        expr: |
+          (process_resident_memory_bytes / process_virtual_memory_bytes) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage"
+          description: "Memory usage is {{ $value | humanizePercentage }} (threshold: 90%)"
+
+      # CPU 使用率过高告警
+      - alert: HighCPUUsage
+        expr: |
+          rate(process_cpu_seconds_total[5m]) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage"
+          description: "CPU usage is {{ $value | humanizePercentage }} (threshold: 80%)"
+
+      # 请求速率异常告警
+      - alert: UnusualRequestRate
+        expr: |
+          abs(rate(api_requests_total[5m]) - rate(api_requests_total[15m] offset 10m)) / rate(api_requests_total[15m] offset 10m) > 0.5
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "Unusual request rate detected"
+          description: "Request rate changed by {{ $value | humanizePercentage }} compared to 10 minutes ago"
+

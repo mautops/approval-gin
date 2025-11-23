@@ -1,0 +1,58 @@
+# Git 相关
+.git
+.gitignore
+.gitattributes
+
+# 测试文件
+tests/
+*.test
+*.out
+coverage.out
+coverage.html
+
+# 文档
+docs/
+*.md
+!README.md
+
+# IDE 配置
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 构建产物
+bin/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+*.log
+
+# 环境变量文件
+.env
+.env.local
+.env.*.local
+
+# Docker 相关
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+.circleci/
+
+# 其他
+.DS_Store
+Thumbs.db
+

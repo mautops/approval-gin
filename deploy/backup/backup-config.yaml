@@ -1,0 +1,23 @@
+# 备份策略配置文件示例
+backup:
+  # 全量备份配置
+  full_backup:
+    enabled: true
+    schedule: "0 0 * * *"  # 每天凌晨执行（cron 格式）
+    retention_days: 30     # 保留 30 天
+  
+  # 增量备份配置
+  incremental_backup:
+    enabled: true
+    interval: "1h"          # 每小时执行一次
+    retention_days: 7       # 保留 7 天
+  
+  # 备份验证
+  verify: true              # 启用备份验证
+  
+  # 备份目录
+  directory: "/var/backups/approval-gin"
+  
+  # 压缩
+  compression: true         # 启用压缩
+

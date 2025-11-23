@@ -1,0 +1,2757 @@
+---
+alwaysApply: true
+---
+
+# Approval Gin 技术实现方案
+
+**版本**: 1.0.0  
+**创建日期**: 2025-11-21
+**状态**: Draft
+
+## 1. 技术架构设计
+
+### 1.1 整体架构
+
+采用分层架构设计,清晰分离控制器层、服务层、数据访问层,通过依赖注入实现组件解耦.
+
+```
+┌─────────────────────────────────────────┐
+│        前端层 (Approval Web)            │
+│  - React Flow 可视化                    │
+│  - 用户界面和交互                        │
+└─────────────────┬───────────────────────┘
+                  │ HTTP/REST API
+┌─────────────────▼───────────────────────┐
+│        API 层 (Gin Router)               │
+│  ┌───────────────────────────────────┐  │
+│  │  控制器层 (Controllers)            │  │
+│  │  - 模板管理控制器                  │  │
+│  │  - 任务管理控制器                  │  │
+│  │  - 查询控制器                      │  │
+│  └───────────────────────────────────┘  │
+│  ┌───────────────────────────────────┐  │
+│  │  中间件层 (Middleware)             │  │
+│  │  - JWT 认证中间件                  │  │
+│  │  - OpenFGA 权限中间件              │  │
+│  │  - 错误处理中间件                  │  │
+│  │  - 日志记录中间件                  │  │
+│  └───────────────────────────────────┘  │
+└─────────────────┬───────────────────────┘
+                  │ 服务接口
+┌─────────────────▼───────────────────────┐
+│        服务层 (Services)                 │
+│  ┌───────────────────────────────────┐  │
+│  │  模板服务                          │  │
+│  │  任务服务                          │  │
+│  │  查询服务                          │  │
+│  │  统计服务                          │  │
+│  └───────────────────────────────────┘  │
+└─────────────────┬───────────────────────┘
+                  │ Approval Kit 接口
+┌─────────────────▼───────────────────────┐
+│      Approval Kit 核心库                  │
+│  - TemplateManager 接口实现               │
+│  - TaskManager 接口实现                   │
+│  - 状态机引擎                            │
+│  - 节点执行引擎                          │
+└─────────────────┬───────────────────────┘
+                  │ 数据访问
+┌─────────────────▼───────────────────────┐
+│        数据访问层 (Repository)           │
+│  ┌───────────────────────────────────┐  │
+│  │  模板仓储 (GORM)                   │  │
+│  │  任务仓储 (GORM)                   │  │
+│  │  记录仓储 (GORM)                   │  │
+│  │  历史仓储 (GORM)                   │  │
+│  └───────────────────────────────────┘  │
+└─────────────────┬───────────────────────┘
+                  │
+┌─────────────────▼───────────────────────┐
+│      PostgreSQL 数据库                   │
+│  - 模板表                                │
+│  - 任务表                                │
+│  - 记录表                                │
+│  - 历史表                                │
+└─────────────────────────────────────────┘
+
+┌─────────────────────────────────────────┐
+│      OpenFGA 权限服务                    │
+│  - 权限模型定义                          │
+│  - 权限检查                              │
+│  - 权限缓存                              │
+└─────────────────────────────────────────┘
+```
+
+### 1.2 核心设计原则
+
+1. **基于 Approval Kit**: 所有审批流核心逻辑通过调用 `approval-kit` 实现,不重新实现状态管理
+2. **分层架构**: 清晰分离控制器、服务、数据访问层,便于测试和维护
+3. **依赖注入**: 通过依赖注入实现组件解耦,支持测试和扩展
+4. **接口抽象**: 通过接口定义组件间的交互契约,支持实现替换
+5. **事务管理**: 所有数据操作支持事务,确保数据一致性
+6. **权限优先**: 所有 API 接口在业务逻辑执行前进行权限检查
+
+### 1.3 技术栈
+
+- **Web 框架**: Gin (github.com/gin-gonic/gin)
+- **命令行工具**: Cobra (github.com/spf13/cobra)
+- **数据库**: PostgreSQL
+- **ORM**: GORM (gorm.io/gorm)
+- **权限管理**: OpenFGA (github.com/openfga/go-sdk)
+- **认证**: JWT (github.com/golang-jwt/jwt/v5) + Keycloak (JWKS 验证)
+- **WebSocket**: Gorilla WebSocket (github.com/gorilla/websocket)
+- **配置管理**: Viper (github.com/spf13/viper)
+- **日志**: Logrus 或 Zap (结构化日志)
+- **API 文档**: Swaggo (github.com/swaggo/gin-swagger, github.com/swaggo/swag)
+
+## 2. 数据库模型设计
+
+### 2.1 数据库选型
+
+使用 PostgreSQL 作为主数据库,支持以下特性:
+
+- **ACID 事务**: 确保数据一致性
+- **JSON 支持**: 支持存储 JSON 格式的模板和任务数据
+- **索引优化**: 支持多种索引类型,优化查询性能
+- **并发控制**: 支持行级锁和 MVCC,保证并发安全
+- **数据迁移**: 使用 GORM 的 AutoMigrate 或独立的迁移工具
+
+### 2.2 核心数据模型
+
+#### 2.2.1 模板表 (templates)
+
+```go
+// TemplateModel 模板数据模型
+type TemplateModel struct {
+    ID          string    `gorm:"primaryKey;type:varchar(64)"`
+    Name        string    `gorm:"type:varchar(255);not null"`
+    Description string    `gorm:"type:text"`
+    Version     int       `gorm:"type:int;not null;default:1"`
+    Data        []byte    `gorm:"type:jsonb;not null"` // 序列化后的 Template 对象
+    CreatedAt   time.Time `gorm:"not null"`
+    UpdatedAt   time.Time `gorm:"not null"`
+    CreatedBy   string    `gorm:"type:varchar(64)"` // 创建人 ID
+    UpdatedBy   string    `gorm:"type:varchar(64)"` // 更新人 ID
+
+    // 索引
+    // CREATE INDEX idx_templates_name ON templates(name);
+    // CREATE INDEX idx_templates_created_at ON templates(created_at);
+    // CREATE UNIQUE INDEX idx_templates_id_version ON templates(id, version);
+}
+
+// TableName 指定表名
+func (TemplateModel) TableName() string {
+    return "templates"
+}
+```
+
+#### 2.2.2 任务表 (tasks)
+
+```go
+// TaskModel 任务数据模型
+type TaskModel struct {
+    ID             string    `gorm:"primaryKey;type:varchar(64)"`
+    TemplateID     string    `gorm:"type:varchar(64);not null;index"`
+    TemplateVersion int       `gorm:"type:int;not null"`
+    BusinessID     string    `gorm:"type:varchar(64);index"` // 业务 ID
+    State          string    `gorm:"type:varchar(32);not null;index"` // 任务状态
+    CurrentNode    string    `gorm:"type:varchar(64)"` // 当前节点 ID
+    Data           []byte    `gorm:"type:jsonb;not null"` // 序列化后的 Task 对象
+    CreatedAt      time.Time `gorm:"not null;index"`
+    UpdatedAt      time.Time `gorm:"not null;index"`
+    SubmittedAt    *time.Time `gorm:"index"` // 提交时间
+    CreatedBy      string    `gorm:"type:varchar(64);index"` // 创建人 ID
+
+    // 索引
+    // CREATE INDEX idx_tasks_template_id ON tasks(template_id);
+    // CREATE INDEX idx_tasks_business_id ON tasks(business_id);
+    // CREATE INDEX idx_tasks_state ON tasks(state);
+    // CREATE INDEX idx_tasks_created_by ON tasks(created_by);
+    // CREATE INDEX idx_tasks_created_at ON tasks(created_at);
+    // CREATE INDEX idx_tasks_updated_at ON tasks(updated_at);
+}
+
+// TableName 指定表名
+func (TaskModel) TableName() string {
+    return "tasks"
+}
+```
+
+#### 2.2.3 审批记录表 (approval_records)
+
+```go
+// ApprovalRecordModel 审批记录数据模型
+type ApprovalRecordModel struct {
+    ID          string    `gorm:"primaryKey;type:varchar(64)"`
+    TaskID      string    `gorm:"type:varchar(64);not null;index"`
+    NodeID      string    `gorm:"type:varchar(64);not null"`
+    Approver    string    `gorm:"type:varchar(64);not null;index"`
+    Result      string    `gorm:"type:varchar(32);not null"` // approve/reject/transfer
+    Comment     string    `gorm:"type:text"`
+    Attachments []string  `gorm:"type:jsonb"` // 附件列表
+    CreatedAt   time.Time `gorm:"not null;index"`
+
+    // 索引
+    // CREATE INDEX idx_records_task_id ON approval_records(task_id);
+    // CREATE INDEX idx_records_approver ON approval_records(approver);
+    // CREATE INDEX idx_records_created_at ON approval_records(created_at);
+}
+
+// TableName 指定表名
+func (ApprovalRecordModel) TableName() string {
+    return "approval_records"
+}
+```
+
+#### 2.2.4 状态变更历史表 (state_history)
+
+```go
+// StateHistoryModel 状态变更历史数据模型
+type StateHistoryModel struct {
+    ID        string    `gorm:"primaryKey;type:varchar(64)"`
+    TaskID    string    `gorm:"type:varchar(64);not null;index"`
+    FromState string    `gorm:"type:varchar(32)"`
+    ToState   string    `gorm:"type:varchar(32);not null"`
+    Reason    string    `gorm:"type:text"`
+    Operator  string    `gorm:"type:varchar(64);not null"`
+    CreatedAt time.Time `gorm:"not null;index"`
+
+    // 索引
+    // CREATE INDEX idx_history_task_id ON state_history(task_id);
+    // CREATE INDEX idx_history_created_at ON state_history(created_at);
+}
+
+// TableName 指定表名
+func (StateHistoryModel) TableName() string {
+    return "state_history"
+}
+```
+
+#### 2.2.5 事件表 (events)
+
+```go
+// EventModel 事件数据模型
+type EventModel struct {
+    ID        string    `gorm:"primaryKey;type:varchar(64)"`
+    TaskID    string    `gorm:"type:varchar(64);not null;index"`
+    Type      string    `gorm:"type:varchar(32);not null;index"`
+    Data      []byte    `gorm:"type:jsonb;not null"` // 序列化后的事件数据
+    Status    string    `gorm:"type:varchar(32);not null;default:'pending'"` // pending/success/failed
+    RetryCount int      `gorm:"type:int;default:0"`
+    CreatedAt time.Time `gorm:"not null;index"`
+    UpdatedAt time.Time `gorm:"not null"`
+
+    // 索引
+    // CREATE INDEX idx_events_task_id ON events(task_id);
+    // CREATE INDEX idx_events_type ON events(type);
+    // CREATE INDEX idx_events_status ON events(status);
+    // CREATE INDEX idx_events_created_at ON events(created_at);
+}
+
+// TableName 指定表名
+func (EventModel) TableName() string {
+    return "events"
+}
+```
+
+### 2.3 数据序列化
+
+模板和任务数据使用 JSON 格式序列化存储:
+
+- **模板数据**: 将 `approval-kit` 的 `Template` 对象序列化为 JSON 存储在 `templates.data` 字段
+- **任务数据**: 将 `approval-kit` 的 `Task` 对象序列化为 JSON 存储在 `tasks.data` 字段
+- **反序列化**: 从数据库读取时,将 JSON 数据反序列化为 `approval-kit` 的数据结构
+
+### 2.4 数据迁移
+
+使用 GORM 的 AutoMigrate 或独立的迁移工具(如 golang-migrate):
+
+- **版本控制**: 每个迁移脚本包含版本号
+- **向前兼容**: 迁移脚本必须支持向前兼容
+- **回滚支持**: 提供回滚脚本,支持版本回退
+
+## 3. 与 Approval Kit 的集成
+
+### 3.1 导入 Approval Kit 公共 API
+
+`approval-kit` 在 `pkg` 目录下暴露了所有公共接口和类型,可以直接导入使用:
+
+```go
+import (
+    "github.com/mautops/approval-kit/pkg/template"
+    "github.com/mautops/approval-kit/pkg/task"
+    "github.com/mautops/approval-kit/pkg/event"
+    "github.com/mautops/approval-kit/pkg/statemachine"
+    "github.com/mautops/approval-kit/pkg/types"
+)
+```
+
+**注意**: 必须从 `pkg` 包导入接口和类型,不要复制或重新定义这些接口和类型.
+
+### 3.2 TemplateManager 实现
+
+实现 `approval-kit` 的 `TemplateManager` 接口,基于 PostgreSQL 持久化:
+
+```go
+import (
+    "github.com/mautops/approval-kit/pkg/template"
+)
+
+// dbTemplateManager 基于数据库的模板管理器
+type dbTemplateManager struct {
+    db *gorm.DB
+}
+
+// NewTemplateManager 创建模板管理器
+func NewTemplateManager(db *gorm.DB) template.TemplateManager {
+    return &dbTemplateManager{db: db}
+}
+
+// Create 创建模板
+func (m *dbTemplateManager) Create(tpl *template.Template) error {
+    // 1. 验证模板
+    if err := tpl.Validate(); err != nil {
+        return err
+    }
+
+    // 2. 序列化模板数据
+    data, err := json.Marshal(tpl)
+    if err != nil {
+        return err
+    }
+
+    // 3. 保存到数据库
+    model := &TemplateModel{
+        ID:        tpl.ID,
+        Name:      tpl.Name,
+        Description: tpl.Description,
+        Version:   tpl.Version,
+        Data:      data,
+        CreatedAt: tpl.CreatedAt,
+        UpdatedAt: tpl.UpdatedAt,
+    }
+
+    return m.db.Create(model).Error
+}
+
+// Get 获取模板
+func (m *dbTemplateManager) Get(id string, version int) (*template.Template, error) {
+    var model TemplateModel
+    query := m.db.Where("id = ?", id)
+
+    if version > 0 {
+        query = query.Where("version = ?", version)
+    } else {
+        // 获取最新版本
+        query = query.Order("version DESC").Limit(1)
+    }
+
+    if err := query.First(&model).Error; err != nil {
+        return nil, err
+    }
+
+    // 反序列化
+    var tpl template.Template
+    if err := json.Unmarshal(model.Data, &tpl); err != nil {
+        return nil, err
+    }
+
+    return &tpl, nil
+}
+
+// Update 更新模板(创建新版本)
+func (m *dbTemplateManager) Update(id string, tpl *template.Template) error {
+    // 1. 获取当前最新版本
+    current, err := m.Get(id, 0)
+    if err != nil {
+        return err
+    }
+
+    // 2. 版本号递增
+    tpl.Version = current.Version + 1
+    tpl.UpdatedAt = time.Now()
+
+    // 3. 保存新版本
+    return m.Create(tpl)
+}
+
+// Delete 删除模板
+func (m *dbTemplateManager) Delete(id string) error {
+    return m.db.Where("id = ?", id).Delete(&TemplateModel{}).Error
+}
+
+// ListVersions 列出模板版本
+func (m *dbTemplateManager) ListVersions(id string) ([]int, error) {
+    var versions []int
+    err := m.db.Model(&TemplateModel{}).
+        Where("id = ?", id).
+        Order("version ASC").
+        Pluck("version", &versions).Error
+    return versions, err
+}
+```
+
+### 3.3 TaskManager 实现
+
+实现 `approval-kit` 的 `TaskManager` 接口,基于 PostgreSQL 持久化:
+
+```go
+import (
+    "github.com/mautops/approval-kit/pkg/template"
+    "github.com/mautops/approval-kit/pkg/task"
+    "github.com/mautops/approval-kit/pkg/event"
+    "github.com/mautops/approval-kit/pkg/statemachine"
+)
+
+// dbTaskManager 基于数据库的任务管理器
+type dbTaskManager struct {
+    db          *gorm.DB
+    templateMgr template.TemplateManager
+    stateMachine statemachine.StateMachine
+    eventNotifier *event.EventNotifier
+}
+
+// NewTaskManager 创建任务管理器
+func NewTaskManager(
+    db *gorm.DB,
+    templateMgr template.TemplateManager,
+    notifier *event.EventNotifier,
+) task.TaskManager {
+    return &dbTaskManager{
+        db:          db,
+        templateMgr: templateMgr,
+        stateMachine: statemachine.NewStateMachine(),
+        eventNotifier: notifier,
+    }
+}
+
+// Create 创建任务
+func (m *dbTaskManager) Create(templateID string, businessID string, params json.RawMessage) (*task.Task, error) {
+    // 1. 获取模板
+    tpl, err := m.templateMgr.Get(templateID, 0)
+    if err != nil {
+        return nil, err
+    }
+
+    // 2. 使用 approval-kit 创建任务(内存中)
+    // 这里需要调用 approval-kit 的创建逻辑,然后持久化
+
+    // 3. 序列化任务数据
+    // 4. 保存到数据库
+
+    // 5. 返回任务对象
+}
+
+// Get 获取任务
+func (m *dbTaskManager) Get(id string) (*task.Task, error) {
+    var model TaskModel
+    if err := m.db.Where("id = ?", id).First(&model).Error; err != nil {
+        return nil, err
+    }
+
+    // 反序列化
+    var tsk task.Task
+    if err := json.Unmarshal(model.Data, &tsk); err != nil {
+        return nil, err
+    }
+
+    return &tsk, nil
+}
+
+// Submit 提交任务
+func (m *dbTaskManager) Submit(id string) error {
+    return m.db.Transaction(func(tx *gorm.DB) error {
+        // 1. 获取任务
+        tsk, err := m.Get(id)
+        if err != nil {
+            return err
+        }
+
+        // 2. 调用 approval-kit 的 Submit 逻辑
+        // 这里需要调用 approval-kit 的状态机进行状态转换
+
+        // 3. 保存更新后的任务
+        // 4. 保存状态变更历史
+        // 5. 触发事件
+
+        return nil
+    })
+}
+
+// 其他方法类似实现...
+```
+
+### 3.4 数据同步策略
+
+- **序列化格式**: 使用 JSON 格式序列化 `approval-kit` 的数据结构
+- **版本兼容**: 数据库模型设计时预留扩展字段,支持 `approval-kit` 版本升级
+- **数据迁移**: 当 `approval-kit` 升级时,提供数据迁移脚本,确保数据结构兼容
+
+## 4. REST API 设计
+
+### 4.1 API 路由设计
+
+使用 Gin 框架实现 RESTful API,路由结构如下:
+
+```go
+// api/v1/templates
+router.POST("/api/v1/templates", templateController.Create)
+router.GET("/api/v1/templates", templateController.List)
+router.GET("/api/v1/templates/:id", templateController.Get)
+router.PUT("/api/v1/templates/:id", templateController.Update)
+router.DELETE("/api/v1/templates/:id", templateController.Delete)
+router.GET("/api/v1/templates/:id/versions", templateController.ListVersions)
+
+// api/v1/tasks
+router.POST("/api/v1/tasks", taskController.Create)
+router.GET("/api/v1/tasks", taskController.List)
+router.GET("/api/v1/tasks/:id", taskController.Get)
+router.POST("/api/v1/tasks/:id/submit", taskController.Submit)
+router.POST("/api/v1/tasks/:id/approve", taskController.Approve)
+router.POST("/api/v1/tasks/:id/reject", taskController.Reject)
+router.POST("/api/v1/tasks/:id/cancel", taskController.Cancel)
+router.POST("/api/v1/tasks/:id/withdraw", taskController.Withdraw)
+router.POST("/api/v1/tasks/:id/transfer", taskController.Transfer)
+router.POST("/api/v1/tasks/:id/add-approver", taskController.AddApprover)
+router.POST("/api/v1/tasks/:id/remove-approver", taskController.RemoveApprover)
+router.POST("/api/v1/tasks/:id/pause", taskController.Pause)
+router.POST("/api/v1/tasks/:id/resume", taskController.Resume)
+router.POST("/api/v1/tasks/:id/rollback", taskController.Rollback)
+router.POST("/api/v1/tasks/:id/replace-approver", taskController.ReplaceApprover)
+router.GET("/api/v1/tasks/:id/records", taskController.GetRecords)
+router.GET("/api/v1/tasks/:id/history", taskController.GetHistory)
+
+// WebSocket
+router.GET("/ws/tasks/:id", websocketController.HandleTaskUpdates)
+
+// Swagger UI
+router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+
+// 系统管理
+router.GET("/health", healthController.Check)
+router.GET("/metrics", metricsController.Get)
+```
+
+### 4.2 统一响应格式
+
+所有 API 响应使用统一格式:
+
+```go
+// Response 统一响应格式
+type Response struct {
+    Code    int         `json:"code"`    // 状态码: 0 表示成功,非 0 表示失败
+    Message string      `json:"message"` // 响应消息
+    Data    interface{} `json:"data"`    // 响应数据
+}
+
+// ErrorResponse 错误响应格式
+type ErrorResponse struct {
+    Code    int    `json:"code"`    // 错误码
+    Message string `json:"message"` // 错误消息
+    Detail  string `json:"detail"`  // 错误详情(可选)
+}
+```
+
+### 4.3 分页响应格式
+
+列表查询 API 使用统一的分页格式:
+
+```go
+// PaginatedResponse 分页响应
+type PaginatedResponse struct {
+    Code    int         `json:"code"`
+    Message string      `json:"message"`
+    Data    interface{} `json:"data"`    // 数据列表
+    Pagination PaginationInfo `json:"pagination"`
+}
+
+// PaginationInfo 分页信息
+type PaginationInfo struct {
+    Page      int   `json:"page"`       // 当前页码
+    PageSize  int   `json:"page_size"`  // 每页数量
+    Total     int64 `json:"total"`      // 总记录数
+    TotalPage int   `json:"total_page"` // 总页数
+}
+```
+
+### 4.4 请求参数设计
+
+#### 4.4.1 模板创建请求
+
+```go
+// CreateTemplateRequest 创建模板请求
+type CreateTemplateRequest struct {
+    Name        string                 `json:"name" binding:"required"`
+    Description string                 `json:"description"`
+    Nodes       map[string]interface{} `json:"nodes" binding:"required"`
+    Edges       []interface{}          `json:"edges" binding:"required"`
+    Config      map[string]interface{} `json:"config"`
+}
+```
+
+#### 4.4.2 任务创建请求
+
+```go
+// CreateTaskRequest 创建任务请求
+type CreateTaskRequest struct {
+    TemplateID string          `json:"template_id" binding:"required"`
+    BusinessID string          `json:"business_id" binding:"required"`
+    Params     json.RawMessage `json:"params"`
+}
+```
+
+#### 4.4.3 审批操作请求
+
+```go
+// ApproveRequest 审批请求
+type ApproveRequest struct {
+    NodeID     string   `json:"node_id" binding:"required"`
+    Comment    string   `json:"comment"`
+    Attachments []string `json:"attachments"`
+}
+
+// RejectRequest 拒绝请求
+type RejectRequest struct {
+    NodeID     string   `json:"node_id" binding:"required"`
+    Comment    string   `json:"comment"`
+    Attachments []string `json:"attachments"`
+}
+```
+
+#### 4.4.4 查询请求
+
+```go
+// ListTasksRequest 任务列表查询请求
+type ListTasksRequest struct {
+    State      string `form:"state"`
+    TemplateID string `form:"template_id"`
+    BusinessID string `form:"business_id"`
+    Approver   string `form:"approver"`
+    StartTime  string `form:"created_at_start"`
+    EndTime    string `form:"created_at_end"`
+    Page       int    `form:"page,default=1"`
+    PageSize   int    `form:"page_size,default=20"`
+    SortBy     string `form:"sort_by,default=created_at"`
+    Order      string `form:"order,default=desc"` // asc/desc
+}
+```
+
+## 5. 用户认证和授权
+
+### 5.1 Keycloak JWT Token 验证
+
+使用 Keycloak 签发的 JWT Token 进行用户认证,通过 JWKS (JSON Web Key Set) 验证 token 签名:
+
+```go
+// KeycloakClaims Keycloak JWT 声明
+type KeycloakClaims struct {
+    Sub               string   `json:"sub"`                // 用户 ID
+    Email             string   `json:"email"`              // 邮箱
+    PreferredUsername string   `json:"preferred_username"` // 用户名
+    Name              string   `json:"name"`               // 姓名
+    RealmAccess       struct {
+        Roles []string `json:"roles"` // 角色列表
+    } `json:"realm_access"`
+    jwt.RegisteredClaims
+}
+
+// KeycloakTokenValidator Keycloak Token 验证器
+type KeycloakTokenValidator struct {
+    issuer    string
+    jwksURL   string
+    jwksCache *sync.Map // 缓存 JWKS
+    httpClient *http.Client
+}
+
+// NewKeycloakTokenValidator 创建 Keycloak Token 验证器
+func NewKeycloakTokenValidator(issuer string) *KeycloakTokenValidator {
+    return &KeycloakTokenValidator{
+        issuer:    issuer,
+        jwksURL:   fmt.Sprintf("%s/protocol/openid-connect/certs", issuer),
+        jwksCache: &sync.Map{},
+        httpClient: &http.Client{
+            Timeout: 10 * time.Second,
+        },
+    }
+}
+
+// ValidateToken 验证 Keycloak JWT Token
+func (v *KeycloakTokenValidator) ValidateToken(tokenString string) (*KeycloakClaims, error) {
+    // 1. 解析 token (不验证签名)
+    token, err := jwt.ParseWithClaims(tokenString, &KeycloakClaims{}, func(token *jwt.Token) (interface{}, error) {
+        // 验证签名算法
+        if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+            return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+        }
+        return nil, nil // 先返回 nil,稍后获取公钥
+    })
+
+    if err != nil {
+        return nil, err
+    }
+
+    // 2. 获取 token 的 kid (Key ID)
+    kid, ok := token.Header["kid"].(string)
+    if !ok {
+        return nil, errors.New("missing kid in token header")
+    }
+
+    // 3. 获取公钥
+    publicKey, err := v.getPublicKey(kid)
+    if err != nil {
+        return nil, err
+    }
+
+    // 4. 重新解析并验证 token
+    token, err = jwt.ParseWithClaims(tokenString, &KeycloakClaims{}, func(token *jwt.Token) (interface{}, error) {
+        return publicKey, nil
+    })
+
+    if err != nil {
+        return nil, err
+    }
+
+    // 5. 验证 claims
+    if claims, ok := token.Claims.(*KeycloakClaims); ok && token.Valid {
+        // 验证 issuer
+        if claims.Issuer != v.issuer {
+            return nil, errors.New("invalid issuer")
+        }
+
+        // 验证过期时间
+        if claims.ExpiresAt != nil && claims.ExpiresAt.Time.Before(time.Now()) {
+            return nil, errors.New("token expired")
+        }
+
+        return claims, nil
+    }
+
+    return nil, errors.New("invalid token")
+}
+
+// getPublicKey 获取公钥 (从 JWKS 或缓存)
+func (v *KeycloakTokenValidator) getPublicKey(kid string) (interface{}, error) {
+    // 从缓存获取
+    if cached, ok := v.jwksCache.Load(kid); ok {
+        return cached, nil
+    }
+
+    // 从 Keycloak 获取 JWKS
+    resp, err := v.httpClient.Get(v.jwksURL)
+    if err != nil {
+        return nil, err
+    }
+    defer resp.Body.Close()
+
+    var jwks struct {
+        Keys []struct {
+            Kid string `json:"kid"`
+            Kty string `json:"kty"`
+            Use string `json:"use"`
+            N   string `json:"n"`
+            E   string `json:"e"`
+        } `json:"keys"`
+    }
+
+    if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
+        return nil, err
+    }
+
+    // 查找匹配的 key
+    for _, key := range jwks.Keys {
+        if key.Kid == kid {
+            // 解析 RSA 公钥
+            publicKey, err := parseRSAPublicKey(key.N, key.E)
+            if err != nil {
+                return nil, err
+            }
+
+            // 缓存公钥
+            v.jwksCache.Store(kid, publicKey)
+            return publicKey, nil
+        }
+    }
+
+    return nil, errors.New("key not found in JWKS")
+}
+
+// parseRSAPublicKey 解析 RSA 公钥
+func parseRSAPublicKey(nStr, eStr string) (*rsa.PublicKey, error) {
+    nBytes, err := base64.RawURLEncoding.DecodeString(nStr)
+    if err != nil {
+        return nil, err
+    }
+
+    eBytes, err := base64.RawURLEncoding.DecodeString(eStr)
+    if err != nil {
+        return nil, err
+    }
+
+    n := new(big.Int).SetBytes(nBytes)
+    e := int(new(big.Int).SetBytes(eBytes).Int64())
+
+    return &rsa.PublicKey{
+        N: n,
+        E: e,
+    }, nil
+}
+```
+
+### 5.2 Keycloak JWT 认证中间件
+
+```go
+// KeycloakAuthMiddleware Keycloak JWT 认证中间件
+func KeycloakAuthMiddleware(validator *KeycloakTokenValidator) gin.HandlerFunc {
+    return func(c *gin.Context) {
+        token := c.GetHeader("Authorization")
+        if token == "" {
+            c.JSON(401, ErrorResponse{
+                Code:    401,
+                Message: "missing authorization header",
+            })
+            c.Abort()
+            return
+        }
+
+        // 移除 "Bearer " 前缀
+        if strings.HasPrefix(token, "Bearer ") {
+            token = token[7:]
+        }
+
+        claims, err := validator.ValidateToken(token)
+        if err != nil {
+            c.JSON(401, ErrorResponse{
+                Code:    401,
+                Message: "invalid token",
+                Detail:  err.Error(),
+            })
+            c.Abort()
+            return
+        }
+
+        // 将用户信息存储到上下文
+        c.Set("user_id", claims.Sub)
+        c.Set("username", claims.PreferredUsername)
+        c.Set("email", claims.Email)
+        c.Set("name", claims.Name)
+        c.Set("roles", claims.RealmAccess.Roles)
+
+        c.Next()
+    }
+}
+```
+
+### 5.3 OpenFGA 权限管理
+
+#### 5.3.1 权限模型定义
+
+使用 OpenFGA 定义权限模型,支持以下关系:
+
+```
+model
+  schema 1.1
+
+type user
+
+type template
+  relations
+    define owner: [user]
+    define viewer: [user]
+    define editor: [user] or owner
+    define deleter: [user] or owner
+
+type task
+  relations
+    define creator: [user]
+    define approver: [user]
+    define viewer: [user] or creator or approver
+    define operator: [user] or creator or approver
+```
+
+#### 5.3.2 OpenFGA 客户端实现
+
+```go
+// OpenFGAClient OpenFGA 客户端
+type OpenFGAClient struct {
+    client *openfga.Client
+    modelID string
+}
+
+// NewOpenFGAClient 创建 OpenFGA 客户端
+func NewOpenFGAClient(apiURL string, storeID string, modelID string) (*OpenFGAClient, error) {
+    configuration, err := openfga.NewConfiguration(openfga.Configuration{
+        ApiUrl: apiURL,
+        StoreId: storeID,
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    client := openfga.NewAPIClient(configuration)
+
+    return &OpenFGAClient{
+        client: client,
+        modelID: modelID,
+    }, nil
+}
+
+// CheckPermission 检查权限
+func (c *OpenFGAClient) CheckPermission(
+    ctx context.Context,
+    userID string,
+    relation string,
+    objectType string,
+    objectID string,
+) (bool, error) {
+    body := openfga.CheckRequest{
+        User:     openfga.PtrString(fmt.Sprintf("user:%s", userID)),
+        Relation: openfga.PtrString(relation),
+        Object:   openfga.PtrString(fmt.Sprintf("%s:%s", objectType, objectID)),
+    }
+
+    response, err := c.client.Check(ctx).Body(body).Execute()
+    if err != nil {
+        return false, err
+    }
+
+    return response.GetAllowed(), nil
+}
+```
+
+#### 5.3.3 权限检查中间件
+
+```go
+// PermissionMiddleware 权限检查中间件
+func PermissionMiddleware(
+    fgaClient *OpenFGAClient,
+    objectType string,
+    relation string,
+) gin.HandlerFunc {
+    return func(c *gin.Context) {
+        userID, exists := c.Get("user_id")
+        if !exists {
+            c.JSON(401, ErrorResponse{
+                Code:    401,
+                Message: "unauthorized",
+            })
+            c.Abort()
+            return
+        }
+
+        objectID := c.Param("id")
+        if objectID == "" {
+            objectID = c.Query("id")
+        }
+
+        allowed, err := fgaClient.CheckPermission(
+            c.Request.Context(),
+            userID.(string),
+            relation,
+            objectType,
+            objectID,
+        )
+
+        if err != nil {
+            c.JSON(500, ErrorResponse{
+                Code:    500,
+                Message: "permission check failed",
+            })
+            c.Abort()
+            return
+        }
+
+        if !allowed {
+            c.JSON(403, ErrorResponse{
+                Code:    403,
+                Message: "forbidden",
+            })
+            c.Abort()
+            return
+        }
+
+        c.Next()
+    }
+}
+```
+
+### 5.4 权限缓存
+
+实现权限缓存机制,提高性能:
+
+```go
+// PermissionCache 权限缓存
+type PermissionCache struct {
+    cache *cache.Cache // 使用 go-cache 或类似库
+    ttl   time.Duration
+}
+
+// NewPermissionCache 创建权限缓存
+func NewPermissionCache(ttl time.Duration) *PermissionCache {
+    return &PermissionCache{
+        cache: cache.New(ttl, ttl),
+        ttl:   ttl,
+    }
+}
+
+// Get 获取缓存
+func (c *PermissionCache) Get(key string) (bool, bool) {
+    val, found := c.cache.Get(key)
+    if !found {
+        return false, false
+    }
+    return val.(bool), true
+}
+
+// Set 设置缓存
+func (c *PermissionCache) Set(key string, value bool) {
+    c.cache.Set(key, value, c.ttl)
+}
+```
+
+## 6. 事件处理
+
+### 6.1 事件处理器实现
+
+实现 `approval-kit` 的 `EventHandler` 接口:
+
+```go
+import (
+    "github.com/mautops/approval-kit/pkg/event"
+)
+
+// dbEventHandler 基于数据库的事件处理器
+type dbEventHandler struct {
+    db     *gorm.DB
+    queue  chan *event.Event
+    workers int
+}
+
+// NewEventHandler 创建事件处理器
+func NewEventHandler(db *gorm.DB, workers int) event.EventHandler {
+    handler := &dbEventHandler{
+        db:      db,
+        queue:   make(chan *event.Event, 1000),
+        workers: workers,
+    }
+
+    // 启动 worker goroutines
+    for i := 0; i < workers; i++ {
+        go handler.worker()
+    }
+
+    return handler
+}
+
+// Handle 处理事件
+func (h *dbEventHandler) Handle(evt *event.Event) error {
+    // 1. 持久化事件到数据库
+    eventModel := &EventModel{
+        ID:        generateID(),
+        TaskID:    evt.Task.ID,
+        Type:      string(evt.Type),
+        Data:      serializeEvent(evt),
+        Status:    "pending",
+        CreatedAt: evt.Time,
+    }
+
+    if err := h.db.Create(eventModel).Error; err != nil {
+        return err
+    }
+
+    // 2. 异步推送到 Webhook
+    select {
+    case h.queue <- evt:
+    default:
+        // 队列满时记录日志
+        log.Warn("event queue full, dropping event")
+    }
+
+    return nil
+}
+
+// worker 事件处理 worker
+func (h *dbEventHandler) worker() {
+    for evt := range h.queue {
+        h.pushToWebhook(evt)
+    }
+}
+
+// pushToWebhook 推送到 Webhook
+func (h *dbEventHandler) pushToWebhook(evt *event.Event) {
+    // 1. 获取任务的模板配置
+    // 2. 获取 Webhook 配置
+    // 3. 发送 HTTP 请求
+    // 4. 更新事件状态
+    // 5. 失败时重试
+}
+```
+
+### 6.2 事件重试机制
+
+```go
+// RetryEvent 重试事件
+func (h *dbEventHandler) RetryEvent(eventID string) error {
+    var eventModel EventModel
+    if err := h.db.Where("id = ?", eventID).First(&eventModel).Error; err != nil {
+        return err
+    }
+
+    // 反序列化事件
+    evt := deserializeEvent(eventModel.Data)
+
+    // 重新推送
+    return h.pushToWebhook(evt)
+}
+```
+
+## 7. 错误处理
+
+### 7.1 错误分类
+
+定义错误类型和错误码:
+
+```go
+// 错误码定义
+const (
+    ErrCodeSuccess        = 0
+    ErrCodeInvalidRequest = 1000
+    ErrCodeUnauthorized   = 1001
+    ErrCodeForbidden      = 1002
+    ErrCodeNotFound       = 1003
+    ErrCodeInternalError  = 1004
+    ErrCodeDatabaseError  = 1005
+    ErrCodeApprovalKitError = 2000
+)
+
+// APIError API 错误
+type APIError struct {
+    Code    int    `json:"code"`
+    Message string `json:"message"`
+    Detail  string `json:"detail,omitempty"`
+}
+
+func (e *APIError) Error() string {
+    return e.Message
+}
+```
+
+### 7.2 错误处理中间件
+
+```go
+// ErrorHandlerMiddleware 错误处理中间件
+func ErrorHandlerMiddleware() gin.HandlerFunc {
+    return func(c *gin.Context) {
+        c.Next()
+
+        if len(c.Errors) > 0 {
+            err := c.Errors.Last()
+
+            var apiErr *APIError
+            if errors.As(err, &apiErr) {
+                c.JSON(getStatusCode(apiErr.Code), apiErr)
+            } else {
+                c.JSON(500, ErrorResponse{
+                    Code:    ErrCodeInternalError,
+                    Message: "internal server error",
+                })
+            }
+        }
+    }
+}
+```
+
+### 7.3 错误包装
+
+```go
+// WrapError 包装错误
+func WrapError(err error, code int, message string) *APIError {
+    return &APIError{
+        Code:    code,
+        Message: message,
+        Detail:  err.Error(),
+    }
+}
+```
+
+## 8. 性能优化
+
+### 8.1 数据库优化
+
+- **索引优化**: 为常用查询字段创建索引
+- **查询优化**: 避免 N+1 查询,使用预加载(Eager Loading)
+- **连接池**: 配置数据库连接池,优化连接管理
+- **批量操作**: 支持批量插入和更新,减少数据库交互
+
+### 8.2 缓存策略
+
+- **模板缓存**: 缓存常用模板,减少数据库查询
+- **权限缓存**: 缓存权限检查结果,减少 OpenFGA 调用
+- **任务缓存**: 对于热点任务,使用缓存减少数据库压力
+
+### 8.3 API 限流
+
+使用限流中间件防止 API 滥用:
+
+```go
+// RateLimitMiddleware 限流中间件
+func RateLimitMiddleware() gin.HandlerFunc {
+    limiter := rate.NewLimiter(rate.Limit(100), 10) // 100 req/s, burst 10
+
+    return func(c *gin.Context) {
+        if !limiter.Allow() {
+            c.JSON(429, ErrorResponse{
+                Code:    429,
+                Message: "too many requests",
+            })
+            c.Abort()
+            return
+        }
+        c.Next()
+    }
+}
+```
+
+## 9. 测试策略
+
+### 9.1 单元测试
+
+- **服务层测试**: 使用 Mock 对象测试服务层逻辑
+- **仓储层测试**: 使用测试数据库测试数据访问层
+- **工具函数测试**: 测试所有工具函数和辅助函数
+
+### 9.2 集成测试
+
+- **API 集成测试**: 测试完整的 API 流程
+- **数据库集成测试**: 测试数据库操作和事务
+- **Approval Kit 集成测试**: 测试与 approval-kit 的集成
+
+### 9.3 测试工具
+
+- **测试框架**: 使用 Go 标准 testing 包
+- **Mock 工具**: 使用 gomock 或 testify/mock
+- **测试数据库**: 使用测试专用的 PostgreSQL 实例或 SQLite
+
+## 10. 项目结构
+
+### 10.1 目录结构
+
+```
+approval-gin/
+├── cmd/
+│   ├── root.go          # Cobra 根命令
+│   └── server.go        # 服务器启动命令
+├── internal/
+│   ├── api/
+│   │   ├── controllers/ # 控制器层
+│   │   │   ├── template_controller.go
+│   │   │   └── task_controller.go
+│   │   ├── middleware/  # 中间件
+│   │   │   ├── auth.go
+│   │   │   ├── permission.go
+│   │   │   └── error_handler.go
+│   │   └── routes.go    # 路由定义
+│   ├── service/         # 服务层
+│   │   ├── template_service.go
+│   │   ├── task_service.go
+│   │   └── query_service.go
+│   ├── repository/      # 数据访问层
+│   │   ├── template_repo.go
+│   │   ├── task_repo.go
+│   │   └── record_repo.go
+│   ├── model/           # 数据模型
+│   │   ├── template_model.go
+│   │   ├── task_model.go
+│   │   └── record_model.go
+│   ├── integration/     # Approval Kit 集成
+│   │   ├── template_manager.go
+│   │   ├── task_manager.go
+│   │   └── event_handler.go
+│   ├── auth/            # 认证授权
+│   │   ├── keycloak.go  # Keycloak JWT 验证
+│   │   └── openfga.go
+│   ├── websocket/       # WebSocket 支持
+│   │   ├── hub.go       # WebSocket Hub
+│   │   ├── client.go    # WebSocket Client
+│   │   └── handler.go   # WebSocket Handler
+│   └── config/          # 配置管理
+│       └── config.go
+├── docs/                # Swagger 文档 (自动生成)
+│   ├── docs.go
+│   ├── swagger.json
+│   └── swagger.yaml
+├── migrations/          # 数据库迁移脚本
+├── tests/              # 测试文件
+│   ├── api/
+│   ├── service/
+│   └── repository/
+├── pkg/                # 公共包
+│   └── response/       # 响应格式
+├── go.mod
+├── go.sum
+└── main.go
+```
+
+### 10.2 配置管理
+
+使用 Viper 管理配置:
+
+```go
+// Config 应用配置
+type Config struct {
+    Server    ServerConfig    `mapstructure:"server"`
+    Database  DatabaseConfig  `mapstructure:"database"`
+    OpenFGA   OpenFGAConfig   `mapstructure:"openfga"`
+    Keycloak  KeycloakConfig `mapstructure:"keycloak"`
+    CORS      CORSConfig      `mapstructure:"cors"`
+}
+
+// ServerConfig 服务器配置
+type ServerConfig struct {
+    Host string `mapstructure:"host"`
+    Port int    `mapstructure:"port"`
+}
+
+// DatabaseConfig 数据库配置
+type DatabaseConfig struct {
+    Host     string `mapstructure:"host"`
+    Port     int    `mapstructure:"port"`
+    User     string `mapstructure:"user"`
+    Password string `mapstructure:"password"`
+    DBName   string `mapstructure:"dbname"`
+    SSLMode  string `mapstructure:"sslmode"`
+}
+
+// KeycloakConfig Keycloak 配置
+type KeycloakConfig struct {
+    Issuer  string `mapstructure:"issuer"`  // Keycloak Issuer URL
+    JWKSURL string `mapstructure:"jwks_url"` // JWKS URL (可选,默认从 Issuer 推导)
+}
+
+// CORSConfig CORS 配置
+type CORSConfig struct {
+    AllowedOrigins []string `mapstructure:"allowed_origins"` // 允许的源列表
+    AllowedMethods []string `mapstructure:"allowed_methods"` // 允许的方法
+    AllowedHeaders []string `mapstructure:"allowed_headers"` // 允许的请求头
+    MaxAge         int      `mapstructure:"max_age"`         // 预检请求缓存时间(秒)
+}
+```
+
+## 11. 部署和运维
+
+### 11.1 健康检查
+
+```go
+// HealthController 健康检查控制器
+type HealthController struct{}
+
+// Check 健康检查
+func (c *HealthController) Check(ctx *gin.Context) {
+    // 检查数据库连接
+    // 检查 OpenFGA 连接
+    // 返回健康状态
+
+    ctx.JSON(200, gin.H{
+        "status": "healthy",
+        "timestamp": time.Now().Unix(),
+    })
+}
+```
+
+### 11.2 监控指标
+
+使用 Prometheus 暴露监控指标:
+
+- API 请求数量
+- API 响应时间
+- 数据库连接数
+- 错误率
+- 任务处理数量
+
+### 11.3 日志记录
+
+使用结构化日志记录:
+
+- 所有 API 请求日志
+- 错误日志
+- 关键操作日志
+- 性能日志
+
+## 12. 命令行工具设计
+
+### 12.1 Cobra 命令结构
+
+使用 Cobra 构建命令行工具:
+
+```go
+// cmd/root.go
+var rootCmd = &cobra.Command{
+    Use:   "approval-gin",
+    Short: "Approval workflow API server",
+    Long:  "A REST API server for approval workflow management",
+}
+
+// cmd/server.go
+var serverCmd = &cobra.Command{
+    Use:   "server",
+    Short: "Start the API server",
+    RunE: func(cmd *cobra.Command, args []string) error {
+        // 加载配置
+        // 初始化数据库
+        // 初始化 OpenFGA
+        // 启动 Gin 服务器
+        return nil
+    },
+}
+
+// cmd/migrate.go
+var migrateCmd = &cobra.Command{
+    Use:   "migrate",
+    Short: "Run database migrations",
+    RunE: func(cmd *cobra.Command, args []string) error {
+        // 执行数据库迁移
+        return nil
+    },
+}
+```
+
+### 12.2 命令行参数
+
+```go
+// 服务器配置
+serverCmd.Flags().String("host", "0.0.0.0", "Server host")
+serverCmd.Flags().Int("port", 8080, "Server port")
+serverCmd.Flags().String("config", "", "Config file path")
+
+// 数据库配置
+rootCmd.PersistentFlags().String("db-host", "localhost", "Database host")
+rootCmd.PersistentFlags().Int("db-port", 5432, "Database port")
+rootCmd.PersistentFlags().String("db-user", "postgres", "Database user")
+rootCmd.PersistentFlags().String("db-password", "", "Database password")
+rootCmd.PersistentFlags().String("db-name", "approval", "Database name")
+```
+
+## 13. 实现细节
+
+### 13.1 控制器实现示例
+
+```go
+// TemplateController 模板控制器
+type TemplateController struct {
+    templateService *service.TemplateService
+}
+
+// Create 创建模板
+func (c *TemplateController) Create(ctx *gin.Context) {
+    var req CreateTemplateRequest
+    if err := ctx.ShouldBindJSON(&req); err != nil {
+        ctx.JSON(400, ErrorResponse{
+            Code:    ErrCodeInvalidRequest,
+            Message: "invalid request",
+            Detail:  err.Error(),
+        })
+        return
+    }
+
+    // 调用服务层
+    template, err := c.templateService.Create(ctx, &req)
+    if err != nil {
+        ctx.JSON(500, ErrorResponse{
+            Code:    ErrCodeInternalError,
+            Message: "failed to create template",
+            Detail:  err.Error(),
+        })
+        return
+    }
+
+    ctx.JSON(200, Response{
+        Code:    ErrCodeSuccess,
+        Message: "success",
+        Data:    template,
+    })
+}
+```
+
+### 13.2 服务层实现示例
+
+```go
+import (
+    "github.com/mautops/approval-kit/pkg/template"
+)
+
+// TemplateService 模板服务
+type TemplateService struct {
+    templateMgr template.TemplateManager
+    repo        *repository.TemplateRepository
+    fgaClient   *auth.OpenFGAClient
+}
+
+// Create 创建模板
+func (s *TemplateService) Create(ctx context.Context, req *CreateTemplateRequest) (*template.Template, error) {
+    // 1. 权限检查
+    userID := ctx.Value("user_id").(string)
+    // 检查用户是否有创建模板的权限
+
+    // 2. 构建 Template 对象
+    tpl := &template.Template{
+        ID:          generateID(),
+        Name:        req.Name,
+        Description: req.Description,
+        Version:     1,
+        CreatedAt:   time.Now(),
+        UpdatedAt:   time.Now(),
+        // ... 其他字段
+    }
+
+    // 3. 调用 approval-kit 创建模板
+    if err := s.templateMgr.Create(tpl); err != nil {
+        return nil, err
+    }
+
+    // 4. 设置权限关系
+    if err := s.fgaClient.SetRelation(ctx, userID, "owner", "template", tpl.ID); err != nil {
+        return nil, err
+    }
+
+    return tpl, nil
+}
+```
+
+### 13.3 仓储层实现示例
+
+```go
+import (
+    "github.com/mautops/approval-kit/pkg/template"
+)
+
+// TemplateRepository 模板仓储
+type TemplateRepository struct {
+    db *gorm.DB
+}
+
+// Save 保存模板
+func (r *TemplateRepository) Save(ctx context.Context, tpl *template.Template) error {
+    data, err := json.Marshal(tpl)
+    if err != nil {
+        return err
+    }
+
+    model := &model.TemplateModel{
+        ID:          tpl.ID,
+        Name:        tpl.Name,
+        Description: tpl.Description,
+        Version:     tpl.Version,
+        Data:        data,
+        CreatedAt:   tpl.CreatedAt,
+        UpdatedAt:   tpl.UpdatedAt,
+    }
+
+    return r.db.WithContext(ctx).Create(model).Error
+}
+
+// FindByID 根据 ID 查找模板
+func (r *TemplateRepository) FindByID(ctx context.Context, id string, version int) (*template.Template, error) {
+    var model model.TemplateModel
+    query := r.db.WithContext(ctx).Where("id = ?", id)
+
+    if version > 0 {
+        query = query.Where("version = ?", version)
+    } else {
+        query = query.Order("version DESC").Limit(1)
+    }
+
+    if err := query.First(&model).Error; err != nil {
+        return nil, err
+    }
+
+    var tpl template.Template
+    if err := json.Unmarshal(model.Data, &tpl); err != nil {
+        return nil, err
+    }
+
+    return &tpl, nil
+}
+```
+
+## 14. 安全考虑
+
+### 14.1 输入验证
+
+- 所有用户输入必须进行验证和清理
+- 使用 Gin 的 binding 进行参数验证
+- 防止 SQL 注入(使用 GORM 的参数化查询)
+- 防止 XSS 攻击(输出时进行转义)
+
+### 14.2 数据加密
+
+- 敏感配置信息使用环境变量或加密存储
+- 数据库连接密码加密存储
+- JWT Secret 使用强密钥
+
+### 14.3 安全头
+
+```go
+// SecurityHeadersMiddleware 安全头中间件
+func SecurityHeadersMiddleware() gin.HandlerFunc {
+    return func(c *gin.Context) {
+        c.Header("X-Content-Type-Options", "nosniff")
+        c.Header("X-Frame-Options", "DENY")
+        c.Header("X-XSS-Protection", "1; mode=block")
+        c.Header("Strict-Transport-Security", "max-age=31536000")
+        c.Next()
+    }
+}
+```
+
+## 15. 总结
+
+本技术实现方案基于 `approval-kit` 核心库,使用 Gin 框架提供 REST API 服务,通过 PostgreSQL 实现数据持久化,使用 OpenFGA 进行权限管理.采用分层架构设计,确保代码清晰、可测试、可维护.
+
+**关键实现点**:
+
+1. **数据持久化**: 使用 GORM 和 PostgreSQL 实现数据持久化
+2. **API 设计**: 遵循 RESTful 规范,提供统一的响应格式
+3. **权限管理**: 集成 OpenFGA,实现细粒度权限控制
+4. **事件处理**: 实现 approval-kit 的事件处理器接口
+5. **错误处理**: 统一的错误处理和响应格式
+6. **性能优化**: 索引优化、缓存策略、API 限流
+7. **测试策略**: 单元测试、集成测试、API 测试
+8. **可观测性**: OpenTelemetry 集成、指标收集、日志聚合
+9. **安全增强**: CSRF 保护、CSP、强制 HTTPS
+10. **数据库优化**: 连接池配置、JSONB 索引、查询优化
+11. **审计日志**: 完整的操作审计记录
+12. **SLA 监控**: 服务级别协议监控
+13. **批量操作**: 支持批量任务操作
+14. **实时更新**: WebSocket 和 SSE 支持
+15. **数据备份**: 自动备份和恢复机制
+
+## 16. 可观测性和监控
+
+### 16.1 OpenTelemetry 集成
+
+集成 OpenTelemetry 实现无侵入的监控和追踪:
+
+```go
+// 使用 OpenTelemetry 进行分布式追踪
+import (
+    "go.opentelemetry.io/otel"
+    "go.opentelemetry.io/otel/trace"
+)
+
+// 在 Gin 中间件中添加追踪
+func TracingMiddleware() gin.HandlerFunc {
+    return func(c *gin.Context) {
+        ctx, span := otel.Tracer("approval-gin").Start(c.Request.Context(), c.FullPath())
+        defer span.End()
+
+        c.Request = c.Request.WithContext(ctx)
+        c.Next()
+    }
+}
+```
+
+### 16.2 指标收集
+
+使用 Prometheus 收集关键指标:
+
+- **API 指标**: 请求数量、响应时间、错误率
+- **业务指标**: 任务创建数、审批操作数、任务完成率
+- **系统指标**: 数据库连接数、内存使用、CPU 使用率
+- **性能指标**: 数据库查询时间、缓存命中率、权限检查时间
+
+### 16.3 日志聚合
+
+使用结构化日志,支持日志聚合和分析:
+
+```go
+// 结构化日志配置
+import "github.com/sirupsen/logrus"
+
+func initLogger() *logrus.Logger {
+    logger := logrus.New()
+    logger.SetFormatter(&logrus.JSONFormatter{})
+    logger.SetLevel(logrus.InfoLevel)
+    return logger
+}
+```
+
+## 17. 安全增强
+
+### 17.1 CSRF 保护
+
+实现 CSRF 保护机制:
+
+```go
+// CSRFMiddleware CSRF 保护中间件
+func CSRFMiddleware() gin.HandlerFunc {
+    return func(c *gin.Context) {
+        // 验证 CSRF Token
+        token := c.GetHeader("X-CSRF-Token")
+        if !validateCSRFToken(token) {
+            c.JSON(403, ErrorResponse{
+                Code:    403,
+                Message: "invalid csrf token",
+            })
+            c.Abort()
+            return
+        }
+        c.Next()
+    }
+}
+```
+
+### 17.2 内容安全策略
+
+设置内容安全策略头:
+
+```go
+// CSPMiddleware 内容安全策略中间件
+func CSPMiddleware() gin.HandlerFunc {
+    return func(c *gin.Context) {
+        c.Header("Content-Security-Policy", "default-src 'self'")
+        c.Next()
+    }
+}
+```
+
+### 17.3 强制 HTTPS
+
+在生产环境强制使用 HTTPS:
+
+```go
+// HTTPSRedirectMiddleware HTTPS 重定向中间件
+func HTTPSRedirectMiddleware() gin.HandlerFunc {
+    return func(c *gin.Context) {
+        if c.GetHeader("X-Forwarded-Proto") != "https" {
+            url := "https://" + c.Request.Host + c.Request.RequestURI
+            c.Redirect(301, url)
+            c.Abort()
+            return
+        }
+        c.Next()
+    }
+}
+```
+
+## 18. 数据库连接管理
+
+### 18.1 连接池配置
+
+配置 GORM 数据库连接池:
+
+```go
+// 数据库连接配置
+db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+if err != nil {
+    return nil, err
+}
+
+sqlDB, err := db.DB()
+if err != nil {
+    return nil, err
+}
+
+// 设置连接池参数
+sqlDB.SetMaxIdleConns(10)              // 最大空闲连接数
+sqlDB.SetMaxOpenConns(100)             // 最大打开连接数
+sqlDB.SetConnMaxLifetime(time.Hour)    // 连接最大生存时间
+sqlDB.SetConnMaxIdleTime(10 * time.Minute) // 连接最大空闲时间
+```
+
+### 18.2 数据库健康检查
+
+实现数据库连接健康检查:
+
+```go
+// CheckDatabaseHealth 检查数据库健康状态
+func CheckDatabaseHealth(db *gorm.DB) error {
+    sqlDB, err := db.DB()
+    if err != nil {
+        return err
+    }
+
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel()
+
+    return sqlDB.PingContext(ctx)
+}
+```
+
+## 19. 中间件增强
+
+### 19.1 CORS 中间件
+
+实现跨域资源共享支持,支持前端应用访问:
+
+```go
+// CORSMiddleware CORS 中间件
+func CORSMiddleware(allowedOrigins []string) gin.HandlerFunc {
+    return func(c *gin.Context) {
+        origin := c.GetHeader("Origin")
+
+        // 检查 origin 是否在允许列表中
+        allowed := false
+        for _, allowedOrigin := range allowedOrigins {
+            if allowedOrigin == "*" || allowedOrigin == origin {
+                allowed = true
+                break
+            }
+        }
+
+        if allowed {
+            c.Header("Access-Control-Allow-Origin", origin)
+            c.Header("Access-Control-Allow-Credentials", "true")
+        }
+
+        c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
+        c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
+        c.Header("Access-Control-Expose-Headers", "X-Request-ID")
+        c.Header("Access-Control-Max-Age", "86400") // 24 小时
+
+        if c.Request.Method == "OPTIONS" {
+            c.AbortWithStatus(204)
+            return
+        }
+
+        c.Next()
+    }
+}
+
+// 配置示例
+// allowedOrigins := []string{
+//     "http://localhost:3000",
+//     "https://approval-web.example.com",
+// }
+// router.Use(CORSMiddleware(allowedOrigins))
+```
+
+### 19.2 请求 ID 追踪
+
+为每个请求生成唯一 ID,便于日志追踪:
+
+```go
+// RequestIDMiddleware 请求 ID 中间件
+func RequestIDMiddleware() gin.HandlerFunc {
+    return func(c *gin.Context) {
+        requestID := c.GetHeader("X-Request-ID")
+        if requestID == "" {
+            requestID = generateUUID()
+        }
+
+        c.Set("request_id", requestID)
+        c.Header("X-Request-ID", requestID)
+        c.Next()
+    }
+}
+```
+
+### 19.3 请求日志中间件
+
+记录所有 API 请求日志:
+
+```go
+// RequestLogMiddleware 请求日志中间件
+func RequestLogMiddleware(logger *logrus.Logger) gin.HandlerFunc {
+    return func(c *gin.Context) {
+        start := time.Now()
+        path := c.Request.URL.Path
+        method := c.Request.Method
+
+        c.Next()
+
+        latency := time.Since(start)
+        status := c.Writer.Status()
+        requestID := c.GetString("request_id")
+
+        logger.WithFields(logrus.Fields{
+            "request_id": requestID,
+            "method":     method,
+            "path":       path,
+            "status":     status,
+            "latency":    latency,
+            "ip":         c.ClientIP(),
+        }).Info("API request")
+    }
+}
+```
+
+## 20. 审计日志
+
+### 20.1 审计日志表
+
+设计审计日志表,记录所有关键操作:
+
+```go
+// AuditLogModel 审计日志数据模型
+type AuditLogModel struct {
+    ID        string    `gorm:"primaryKey;type:varchar(64)"`
+    UserID    string    `gorm:"type:varchar(64);not null;index"`
+    Action    string    `gorm:"type:varchar(64);not null;index"` // create/update/delete/approve/reject
+    ResourceType string `gorm:"type:varchar(32);not null"` // template/task
+    ResourceID   string `gorm:"type:varchar(64);not null;index"`
+    RequestID    string `gorm:"type:varchar(64);index"`
+    IP          string `gorm:"type:varchar(45)"` // IPv4 或 IPv6
+    UserAgent   string `gorm:"type:text"`
+    Details     []byte `gorm:"type:jsonb"` // 操作详情
+    CreatedAt   time.Time `gorm:"not null;index"`
+
+    // 索引
+    // CREATE INDEX idx_audit_user_id ON audit_logs(user_id);
+    // CREATE INDEX idx_audit_action ON audit_logs(action);
+    // CREATE INDEX idx_audit_resource ON audit_logs(resource_type, resource_id);
+    // CREATE INDEX idx_audit_created_at ON audit_logs(created_at);
+}
+
+// TableName 指定表名
+func (AuditLogModel) TableName() string {
+    return "audit_logs"
+}
+```
+
+### 20.2 审计日志记录
+
+在关键操作点记录审计日志:
+
+```go
+// RecordAuditLog 记录审计日志
+func (s *TemplateService) RecordAuditLog(ctx context.Context, action string, resourceType string, resourceID string, details interface{}) error {
+    userID := ctx.Value("user_id").(string)
+    requestID := ctx.Value("request_id").(string)
+
+    detailsJSON, _ := json.Marshal(details)
+
+    auditLog := &AuditLogModel{
+        ID:          generateID(),
+        UserID:      userID,
+        Action:      action,
+        ResourceType: resourceType,
+        ResourceID:  resourceID,
+        RequestID:   requestID,
+        IP:          getClientIP(ctx),
+        UserAgent:   getUserAgent(ctx),
+        Details:     detailsJSON,
+        CreatedAt:   time.Now(),
+    }
+
+    return s.auditRepo.Save(ctx, auditLog)
+}
+```
+
+## 21. 服务级别协议 (SLA)
+
+### 21.1 SLA 配置
+
+为不同类型的操作配置 SLA:
+
+```go
+// SLAConfig SLA 配置
+type SLAConfig struct {
+    TaskCreationMaxTime    time.Duration // 任务创建最大响应时间
+    TaskApprovalMaxTime    time.Duration // 任务审批最大响应时间
+    TemplateQueryMaxTime   time.Duration // 模板查询最大响应时间
+    TaskQueryMaxTime       time.Duration // 任务查询最大响应时间
+}
+
+// CheckSLA 检查 SLA
+func CheckSLA(operation string, duration time.Duration, config *SLAConfig) bool {
+    switch operation {
+    case "task_creation":
+        return duration <= config.TaskCreationMaxTime
+    case "task_approval":
+        return duration <= config.TaskApprovalMaxTime
+    // ... 其他操作
+    }
+    return true
+}
+```
+
+### 21.2 SLA 监控
+
+监控 SLA 违反情况:
+
+```go
+// SLAMonitorMiddleware SLA 监控中间件
+func SLAMonitorMiddleware(config *SLAConfig) gin.HandlerFunc {
+    return func(c *gin.Context) {
+        start := time.Now()
+        operation := getOperation(c)
+
+        c.Next()
+
+        duration := time.Since(start)
+        if !CheckSLA(operation, duration, config) {
+            // 记录 SLA 违反
+            log.Warnf("SLA violation: %s took %v", operation, duration)
+        }
+    }
+}
+```
+
+## 22. 批量操作支持
+
+### 22.1 批量任务操作
+
+支持批量审批、批量转交等操作:
+
+```go
+// BatchApproveRequest 批量审批请求
+type BatchApproveRequest struct {
+    TaskIDs []string      `json:"task_ids" binding:"required"`
+    NodeID  string        `json:"node_id" binding:"required"`
+    Comment string        `json:"comment"`
+}
+
+// BatchApprove 批量审批
+func (c *TaskController) BatchApprove(ctx *gin.Context) {
+    var req BatchApproveRequest
+    if err := ctx.ShouldBindJSON(&req); err != nil {
+        ctx.JSON(400, ErrorResponse{
+            Code:    ErrCodeInvalidRequest,
+            Message: "invalid request",
+        })
+        return
+    }
+
+    results := make([]BatchOperationResult, 0, len(req.TaskIDs))
+    for _, taskID := range req.TaskIDs {
+        err := c.taskService.Approve(ctx, taskID, req.NodeID, getUserID(ctx), req.Comment)
+        results = append(results, BatchOperationResult{
+            TaskID: taskID,
+            Success: err == nil,
+            Error:   err.Error(),
+        })
+    }
+
+    ctx.JSON(200, Response{
+        Code:    ErrCodeSuccess,
+        Message: "batch operation completed",
+        Data:    results,
+    })
+}
+```
+
+## 23. 配置热重载
+
+### 23.1 配置监听
+
+支持配置文件热重载:
+
+```go
+// ConfigWatcher 配置监听器
+type ConfigWatcher struct {
+    viper *viper.Viper
+    callbacks []func(*Config)
+}
+
+// Watch 监听配置文件变化
+func (w *ConfigWatcher) Watch() {
+    w.viper.WatchConfig()
+    w.viper.OnConfigChange(func(e fsnotify.Event) {
+        var config Config
+        if err := w.viper.Unmarshal(&config); err == nil {
+            for _, callback := range w.callbacks {
+                callback(&config)
+            }
+        }
+    })
+}
+```
+
+## 24. API 版本管理策略
+
+### 24.1 版本控制方案
+
+支持多种版本控制方式:
+
+```go
+// 方案 1: URL 路径版本控制
+router.Group("/api/v1")
+router.Group("/api/v2")
+
+// 方案 2: 请求头版本控制
+func VersionMiddleware() gin.HandlerFunc {
+    return func(c *gin.Context) {
+        version := c.GetHeader("API-Version")
+        if version == "" {
+            version = "v1" // 默认版本
+        }
+        c.Set("api_version", version)
+        c.Next()
+    }
+}
+```
+
+### 24.2 版本兼容性
+
+确保 API 版本向后兼容:
+
+- **主版本号变更**: 允许破坏性变更
+- **次版本号变更**: 只能添加新功能,不能破坏现有功能
+- **补丁版本号变更**: 只能修复 bug,不能添加新功能
+
+## 25. 数据备份和恢复
+
+### 25.1 备份策略
+
+实现数据备份机制:
+
+```go
+// BackupService 备份服务
+type BackupService struct {
+    db *gorm.DB
+}
+
+// CreateBackup 创建备份
+func (s *BackupService) CreateBackup(ctx context.Context) (string, error) {
+    // 1. 导出数据库数据
+    // 2. 压缩备份文件
+    // 3. 上传到备份存储
+    // 4. 返回备份文件路径
+}
+
+// RestoreBackup 恢复备份
+func (s *BackupService) RestoreBackup(ctx context.Context, backupPath string) error {
+    // 1. 下载备份文件
+    // 2. 解压备份文件
+    // 3. 恢复数据库数据
+    // 4. 验证数据完整性
+}
+```
+
+### 25.2 备份计划
+
+配置自动备份计划:
+
+- **全量备份**: 每天凌晨执行全量备份
+- **增量备份**: 每小时执行增量备份
+- **备份保留**: 保留最近 30 天的备份
+- **备份验证**: 定期验证备份文件完整性
+
+## 26. 实时状态更新
+
+### 26.1 WebSocket 支持
+
+支持 WebSocket 实时推送任务状态更新,支持 Keycloak Token 认证:
+
+```go
+// WebSocketHandler WebSocket 处理器
+func WebSocketHandler(hub *Hub, validator *KeycloakTokenValidator) gin.HandlerFunc {
+    return func(c *gin.Context) {
+        // 1. 验证 token (从 query 参数获取)
+        token := c.Query("token")
+        if token == "" {
+            c.JSON(401, ErrorResponse{
+                Code:    401,
+                Message: "missing token",
+            })
+            return
+        }
+
+        // 2. 验证 token
+        claims, err := validator.ValidateToken(token)
+        if err != nil {
+            c.JSON(401, ErrorResponse{
+                Code:    401,
+                Message: "invalid token",
+            })
+            return
+        }
+
+        // 3. 升级连接
+        conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+        if err != nil {
+            return
+        }
+
+        // 4. 创建客户端
+        client := &Client{
+            hub:      hub,
+            conn:     conn,
+            send:     make(chan []byte, 256),
+            userID:   claims.Sub,
+            username: claims.PreferredUsername,
+        }
+
+        client.hub.register <- client
+
+        go client.writePump()
+        go client.readPump()
+    }
+}
+
+// Client WebSocket 客户端
+type Client struct {
+    hub      *Hub
+    conn     *websocket.Conn
+    send     chan []byte
+    userID   string
+    username string
+}
+
+// Hub 管理所有 WebSocket 连接
+type Hub struct {
+    clients    map[*Client]bool
+    broadcast  chan []byte
+    register   chan *Client
+    unregister chan *Client
+    mu         sync.RWMutex
+}
+
+// NewHub 创建 Hub
+func NewHub() *Hub {
+    return &Hub{
+        clients:    make(map[*Client]bool),
+        broadcast:  make(chan []byte),
+        register:   make(chan *Client),
+        unregister: make(chan *Client),
+    }
+}
+
+// Run 运行 Hub
+func (h *Hub) Run() {
+    for {
+        select {
+        case client := <-h.register:
+            h.mu.Lock()
+            h.clients[client] = true
+            h.mu.Unlock()
+
+        case client := <-h.unregister:
+            h.mu.Lock()
+            if _, ok := h.clients[client]; ok {
+                delete(h.clients, client)
+                close(client.send)
+            }
+            h.mu.Unlock()
+
+        case message := <-h.broadcast:
+            h.mu.RLock()
+            for client := range h.clients {
+                select {
+                case client.send <- message:
+                default:
+                    close(client.send)
+                    delete(h.clients, client)
+                }
+            }
+            h.mu.RUnlock()
+        }
+    }
+}
+
+// BroadcastToUser 向特定用户广播消息
+func (h *Hub) BroadcastToUser(userID string, message []byte) {
+    h.mu.RLock()
+    defer h.mu.RUnlock()
+
+    for client := range h.clients {
+        if client.userID == userID {
+            select {
+            case client.send <- message:
+            default:
+                close(client.send)
+                delete(h.clients, client)
+            }
+        }
+    }
+}
+```
+
+### 26.2 Server-Sent Events (SSE)
+
+支持 SSE 推送任务状态更新:
+
+```go
+// SSETaskStatusHandler SSE 任务状态推送
+func SSETaskStatusHandler() gin.HandlerFunc {
+    return func(c *gin.Context) {
+        taskID := c.Param("id")
+
+        c.Header("Content-Type", "text/event-stream")
+        c.Header("Cache-Control", "no-cache")
+        c.Header("Connection", "keep-alive")
+
+        // 监听任务状态变化
+        // 推送状态更新到客户端
+    }
+}
+```
+
+## 27. 数据库查询优化
+
+### 27.1 JSONB 索引优化
+
+为 PostgreSQL JSONB 字段创建 GIN 索引:
+
+```sql
+-- 为模板数据创建 GIN 索引
+CREATE INDEX idx_templates_data_gin ON templates USING GIN (data);
+
+-- 为任务数据创建 GIN 索引
+CREATE INDEX idx_tasks_data_gin ON tasks USING GIN (data);
+
+-- 为任务状态和业务 ID 创建复合索引
+CREATE INDEX idx_tasks_state_business ON tasks(state, business_id);
+```
+
+### 27.2 查询优化技巧
+
+- **使用预加载**: 避免 N+1 查询问题
+- **使用批量查询**: 减少数据库往返次数
+- **使用连接池**: 优化数据库连接管理
+- **使用只读副本**: 查询操作使用只读副本,减轻主库压力
+
+## 28. 依赖注入容器
+
+### 28.1 依赖注入实现
+
+使用依赖注入容器管理组件依赖:
+
+```go
+// Container 依赖注入容器
+type Container struct {
+    db          *gorm.DB
+    templateMgr template.TemplateManager
+    taskMgr     task.TaskManager
+    fgaClient   *auth.OpenFGAClient
+    eventHandler event.EventHandler
+}
+
+// NewContainer 创建依赖注入容器
+func NewContainer(config *Config) (*Container, error) {
+    // 1. 初始化数据库
+    db, err := initDatabase(config.Database)
+    if err != nil {
+        return nil, err
+    }
+
+    // 2. 初始化 TemplateManager (实现 approval-kit/pkg/template.TemplateManager)
+    templateMgr := integration.NewTemplateManager(db)
+
+    // 3. 初始化 TaskManager (实现 approval-kit/pkg/task.TaskManager)
+    eventHandler := integration.NewEventHandler(db, config.EventWorkers)
+    taskMgr := integration.NewTaskManager(db, templateMgr, eventHandler)
+
+    // 4. 初始化 OpenFGA 客户端
+    fgaClient, err := auth.NewOpenFGAClient(config.OpenFGA)
+    if err != nil {
+        return nil, err
+    }
+
+    return &Container{
+        db:          db,
+        templateMgr: templateMgr,
+        taskMgr:     taskMgr,
+        fgaClient:   fgaClient,
+        eventHandler: eventHandler,
+    }, nil
+}
+```
+
+## 29. 国际化支持
+
+### 29.1 多语言支持
+
+支持多语言错误消息和响应:
+
+```go
+// I18nMiddleware 国际化中间件
+func I18nMiddleware() gin.HandlerFunc {
+    return func(c *gin.Context) {
+        lang := c.GetHeader("Accept-Language")
+        if lang == "" {
+            lang = "zh-CN" // 默认语言
+        }
+        c.Set("language", lang)
+        c.Next()
+    }
+}
+
+// GetLocalizedMessage 获取本地化消息
+func GetLocalizedMessage(ctx *gin.Context, key string) string {
+    lang := ctx.GetString("language")
+    return i18n.Translate(lang, key)
+}
+```
+
+## 30. 文档和示例
+
+### 30.1 Swagger/OpenAPI 集成
+
+使用 Swaggo 生成和提供 Swagger API 文档页面.
+
+#### 30.1.1 安装依赖
+
+```bash
+go get -u github.com/swaggo/swag/cmd/swag
+go get -u github.com/swaggo/gin-swagger
+go get -u github.com/swaggo/files
+```
+
+#### 30.1.2 生成 Swagger 文档
+
+在项目根目录创建 `docs` 目录,使用 swag 工具生成文档:
+
+```bash
+# 初始化 Swagger 文档
+swag init -g cmd/server/main.go -o docs
+
+# 生成后的文件结构
+# docs/
+#   ├── docs.go
+#   ├── swagger.json
+#   └── swagger.yaml
+```
+
+#### 30.1.3 主程序注释
+
+在 `cmd/server/main.go` 中添加 Swagger 注释:
+
+```go
+// @title           Approval Gin API
+// @version         1.0
+// @description     Approval workflow API server based on approval-kit
+// @termsOfService  http://swagger.io/terms/
+
+// @contact.name   API Support
+// @contact.email  support@example.com
+
+// @license.name  Apache 2.0
+// @license.url   http://www.apache.org/licenses/LICENSE-2.0.html
+
+// @host      localhost:8080
+// @BasePath  /api/v1
+
+// @securityDefinitions.apikey BearerAuth
+// @in header
+// @name Authorization
+// @description Type "Bearer" followed by a space and JWT token from Keycloak
+package main
+```
+
+#### 30.1.4 路由集成
+
+在路由配置中添加 Swagger UI 路由:
+
+```go
+import (
+    "github.com/gin-gonic/gin"
+    swaggerFiles "github.com/swaggo/files"
+    ginSwagger "github.com/swaggo/gin-swagger"
+    _ "your-project/docs" // 导入生成的 docs 包
+)
+
+func setupRoutes(router *gin.Engine) {
+    // API 路由
+    api := router.Group("/api/v1")
+    {
+        // 模板管理 API
+        api.POST("/templates", templateController.Create)
+        api.GET("/templates", templateController.List)
+        // ... 其他路由
+    }
+
+    // Swagger UI 路由
+    router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+
+    // 或者使用自定义配置
+    router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler,
+        ginSwagger.URL("http://localhost:8080/swagger/doc.json"),
+        ginSwagger.DefaultModelsExpandDepth(-1),
+    ))
+}
+```
+
+#### 30.1.5 API 注释示例
+
+为每个 API 端点添加 Swagger 注释:
+
+```go
+// CreateTemplate godoc
+// @Summary      创建审批模板
+// @Description  创建新的审批模板
+// @Tags         模板管理
+// @Accept       json
+// @Produce      json
+// @Param        request body CreateTemplateRequest true "模板信息"
+// @Success      200  {object}  Response{data=Template}
+// @Failure      400  {object}  ErrorResponse
+// @Failure      401  {object}  ErrorResponse
+// @Failure      500  {object}  ErrorResponse
+// @Router       /templates [post]
+// @Security    BearerAuth
+func (c *TemplateController) Create(ctx *gin.Context) {
+    // 实现代码
+}
+
+// ListTemplates godoc
+// @Summary      获取模板列表
+// @Description  分页获取模板列表,支持搜索和排序
+// @Tags         模板管理
+// @Accept       json
+// @Produce      json
+// @Param        page query int false "页码" default(1)
+// @Param        page_size query int false "每页数量" default(20)
+// @Param        search query string false "搜索关键词"
+// @Param        sort_by query string false "排序字段" default(created_at)
+// @Param        order query string false "排序方向" Enums(asc, desc) default(desc)
+// @Success      200  {object}  PaginatedResponse{data=[]Template}
+// @Failure      401  {object}  ErrorResponse
+// @Failure      500  {object}  ErrorResponse
+// @Router       /templates [get]
+// @Security     BearerAuth
+func (c *TemplateController) List(ctx *gin.Context) {
+    // 实现代码
+}
+
+// GetTemplate godoc
+// @Summary      获取模板详情
+// @Description  根据 ID 获取模板详情,支持版本查询
+// @Tags         模板管理
+// @Accept       json
+// @Produce      json
+// @Param        id path string true "模板 ID"
+// @Param        version query int false "版本号,不传则获取最新版本"
+// @Success      200  {object}  Response{data=Template}
+// @Failure      404  {object}  ErrorResponse
+// @Failure      500  {object}  ErrorResponse
+// @Router       /templates/{id} [get]
+// @Security     BearerAuth
+func (c *TemplateController) Get(ctx *gin.Context) {
+    // 实现代码
+}
+```
+
+#### 30.1.6 数据模型注释
+
+为数据模型添加 Swagger 注释:
+
+```go
+// Template 审批模板
+// @Description 审批模板数据结构
+type Template struct {
+    // ID 模板 ID
+    ID string `json:"id" example:"tpl-001"`
+
+    // Name 模板名称
+    Name string `json:"name" example:"请假审批"`
+
+    // Description 模板描述
+    Description string `json:"description" example:"员工请假审批流程"`
+
+    // Version 版本号
+    Version int `json:"version" example:"1"`
+
+    // Nodes 节点定义
+    Nodes map[string]Node `json:"nodes"`
+
+    // Edges 节点连接关系
+    Edges []Edge `json:"edges"`
+
+    // CreatedAt 创建时间
+    CreatedAt time.Time `json:"created_at" example:"2025-01-01T00:00:00Z"`
+
+    // UpdatedAt 更新时间
+    UpdatedAt time.Time `json:"updated_at" example:"2025-01-01T00:00:00Z"`
+}
+
+// CreateTemplateRequest 创建模板请求
+// @Description 创建模板的请求参数
+type CreateTemplateRequest struct {
+    // Name 模板名称
+    Name string `json:"name" binding:"required" example:"请假审批"`
+
+    // Description 模板描述
+    Description string `json:"description" example:"员工请假审批流程"`
+
+    // Nodes 节点定义
+    Nodes map[string]interface{} `json:"nodes" binding:"required"`
+
+    // Edges 节点连接关系
+    Edges []interface{} `json:"edges" binding:"required"`
+
+    // Config 模板配置
+    Config map[string]interface{} `json:"config"`
+}
+```
+
+#### 30.1.7 访问 Swagger UI
+
+启动服务后,访问以下 URL 查看 Swagger UI:
+
+- **Swagger UI**: `http://localhost:8080/swagger/index.html`
+- **Swagger JSON**: `http://localhost:8080/swagger/doc.json`
+- **Swagger YAML**: `http://localhost:8080/swagger/doc.yaml`
+
+#### 30.1.8 认证配置
+
+在 Swagger UI 中配置 Keycloak JWT Token 认证:
+
+```go
+// @securityDefinitions.apikey BearerAuth
+// @in header
+// @name Authorization
+// @description Type "Bearer" followed by a space and JWT token from Keycloak. Example: "Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+#### 30.1.9 自定义 Swagger UI 配置
+
+可以自定义 Swagger UI 的配置:
+
+```go
+router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler,
+    ginSwagger.URL("http://localhost:8080/swagger/doc.json"), // Swagger JSON URL
+    ginSwagger.DefaultModelsExpandDepth(-1),                  // 默认展开模型深度
+    ginSwagger.DocExpansion("list"),                          // 文档展开方式: list/full/none
+    ginSwagger.PersistAuthorization(true),                     // 持久化授权信息
+    ginSwagger.OAuth2RedirectUrl("http://localhost:8080/swagger/oauth2-redirect.html"),
+))
+```
+
+#### 30.1.10 构建时生成文档
+
+在 `Makefile` 或构建脚本中添加文档生成命令:
+
+```makefile
+.PHONY: swagger
+swagger:
+	swag init -g cmd/server/main.go -o docs
+
+.PHONY: build
+build: swagger
+	go build -o bin/approval-gin cmd/server/main.go
+```
+
+#### 30.1.11 持续集成
+
+在 CI/CD 流程中自动生成和验证 Swagger 文档:
+
+```yaml
+# .github/workflows/ci.yml
+- name: Generate Swagger docs
+  run: |
+    go install github.com/swaggo/swag/cmd/swag@latest
+    swag init -g cmd/server/main.go -o docs
+
+- name: Verify Swagger docs
+  run: |
+    # 验证生成的文档格式是否正确
+    test -f docs/swagger.json
+    test -f docs/swagger.yaml
+```
+
+### 30.2 Swagger UI 页面配置
+
+Swagger UI 页面提供交互式的 API 文档,支持:
+
+- **在线测试**: 直接在 Swagger UI 中测试 API 接口
+- **参数说明**: 查看每个接口的请求参数和响应格式
+- **认证测试**: 在 Swagger UI 中输入 JWT token 进行认证测试
+- **模型查看**: 查看数据模型的详细结构
+- **错误码说明**: 查看所有错误码和错误信息
+
+#### 30.2.1 访问地址
+
+- **开发环境**: `http://localhost:8080/swagger/index.html`
+- **生产环境**: `https://api.example.com/swagger/index.html`
+
+#### 30.2.2 使用流程
+
+1. 打开 Swagger UI 页面
+2. 点击右上角 "Authorize" 按钮
+3. 输入 Keycloak JWT token (格式: `Bearer <token>`)
+4. 点击 "Authorize" 完成认证
+5. 在接口列表中展开需要测试的接口
+6. 点击 "Try it out" 按钮
+7. 填写请求参数
+8. 点击 "Execute" 执行请求
+9. 查看响应结果
+
+### 30.3 API 示例代码
+
+提供完整的 API 使用示例:
+
+- 模板创建示例
+- 任务创建和审批示例
+- 查询和统计示例
+- 错误处理示例
+
+## 31. 总结
+
+本技术实现方案基于 `approval-kit` 核心库,使用 Gin 框架提供 REST API 服务,通过 PostgreSQL 实现数据持久化,使用 OpenFGA 进行权限管理.采用分层架构设计,确保代码清晰、可测试、可维护.
+
+**完整技术栈**:
+
+- **Web 框架**: Gin
+- **命令行工具**: Cobra
+- **数据库**: PostgreSQL (GORM)
+- **权限管理**: OpenFGA
+- **认证**: JWT
+- **可观测性**: OpenTelemetry + Prometheus
+- **日志**: 结构化日志 (Logrus/Zap)
+- **配置管理**: Viper
+- **API 文档**: Swagger/OpenAPI
+
+**核心特性**:
+
+1. **完整的数据持久化**: 模板、任务、记录、历史、事件、审计日志
+2. **RESTful API 设计**: 统一的响应格式、分页、排序、过滤
+3. **Keycloak 认证集成**: 支持 Keycloak JWT token 验证、JWKS 公钥验证、用户信息解析
+4. **细粒度权限控制**: OpenFGA 集成、权限缓存
+5. **事件驱动架构**: 异步事件处理、Webhook 推送、重试机制
+6. **高性能优化**: 数据库索引、连接池、缓存策略、API 限流
+7. **可观测性**: 分布式追踪、指标收集、日志聚合
+8. **安全增强**: CSRF 保护、CSP、HTTPS 强制、输入验证、CORS 支持
+9. **审计和合规**: 完整的审计日志、操作追踪
+10. **实时更新**: WebSocket 和 SSE 支持,支持 token 认证
+11. **高可用性**: 健康检查、SLA 监控、数据备份和恢复
+
+**开发建议**:
+
+1. 严格按照 TDD 原则开发
+2. 所有功能必须基于 approval-kit 实现
+3. 遵循分层架构,保持代码清晰
+4. 完善的错误处理和日志记录
+5. 充分的单元测试和集成测试
+6. 完整的 API 文档和使用示例
+
+## 32. 与前端集成要点
+
+### 32.1 Keycloak 认证集成
+
+后端需要支持验证前端通过 Keycloak 获取的 JWT token:
+
+- **JWKS 验证**: 使用 Keycloak 的 JWKS endpoint 获取公钥验证 token
+- **用户信息解析**: 从 Keycloak token 中解析用户信息 (sub, email, name, roles)
+- **Token 缓存**: 缓存 JWKS 公钥,减少网络请求
+- **自动刷新**: 支持 JWKS 自动刷新机制
+
+### 32.2 CORS 配置
+
+后端需要配置 CORS 支持前端跨域访问:
+
+- **允许的源**: 配置前端应用域名 (如 `http://localhost:3000`)
+- **允许的方法**: GET, POST, PUT, DELETE, PATCH, OPTIONS
+- **允许的请求头**: Content-Type, Authorization, X-Request-ID
+- **凭证支持**: 支持携带 Cookie 和认证信息
+
+### 32.3 WebSocket 认证
+
+WebSocket 连接需要支持 token 认证:
+
+- **Token 传递**: 通过 query 参数传递 token (`?token=xxx`)
+- **Token 验证**: 在连接建立时验证 token
+- **用户关联**: 将 WebSocket 连接与用户 ID 关联
+- **定向推送**: 支持向特定用户推送消息
+
+### 32.4 API 响应格式
+
+确保所有 API 响应格式与前端期望一致:
+
+- **统一响应格式**: `{code, message, data}`
+- **分页格式**: `{code, message, data, pagination}`
+- **错误格式**: `{code, message, detail}`
+- **日期格式**: ISO 8601 格式
+
+```
+
+```

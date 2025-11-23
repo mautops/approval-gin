@@ -1,0 +1,66 @@
+{
+  "index_patterns": ["approval-gin-*"],
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 1,
+    "index.refresh_interval": "5s"
+  },
+  "mappings": {
+    "properties": {
+      "@timestamp": {
+        "type": "date"
+      },
+      "time": {
+        "type": "date",
+        "format": "strict_date_optional_time||epoch_millis"
+      },
+      "level": {
+        "type": "keyword"
+      },
+      "msg": {
+        "type": "text",
+        "analyzer": "standard"
+      },
+      "service": {
+        "type": "keyword"
+      },
+      "environment": {
+        "type": "keyword"
+      },
+      "request_id": {
+        "type": "keyword"
+      },
+      "user_id": {
+        "type": "keyword"
+      },
+      "action": {
+        "type": "keyword"
+      },
+      "resource": {
+        "type": "keyword"
+      },
+      "resource_id": {
+        "type": "keyword"
+      },
+      "method": {
+        "type": "keyword"
+      },
+      "path": {
+        "type": "keyword"
+      },
+      "status": {
+        "type": "integer"
+      },
+      "latency": {
+        "type": "text"
+      },
+      "ip": {
+        "type": "ip"
+      },
+      "user_agent": {
+        "type": "text"
+      }
+    }
+  }
+}
+

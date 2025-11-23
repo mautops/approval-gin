@@ -1,0 +1,35 @@
+# Filebeat 配置文件示例（用于收集日志并发送到 Elasticsearch/Logstash）
+filebeat.inputs:
+  - type: log
+    enabled: true
+    paths:
+      - /var/log/approval-gin/*.log
+    fields:
+      service: approval-gin
+      environment: production
+    fields_under_root: false
+    json.keys_under_root: true
+    json.add_error_key: true
+    json.message_key: msg
+
+# 输出到 Elasticsearch
+output.elasticsearch:
+  hosts: ["http://localhost:9200"]
+  index: "approval-gin-%{+yyyy.MM.dd}"
+  template.name: "approval-gin"
+  template.pattern: "approval-gin-*"
+  template.settings:
+    index.number_of_shards: 1
+    index.number_of_replicas: 1
+
+# 或者输出到 Logstash
+#output.logstash:
+#  hosts: ["localhost:5044"]
+
+# 处理配置
+processors:
+  - add_host_metadata:
+      when.not.contains.tags: forwarded
+  - add_docker_metadata: ~
+  - add_kubernetes_metadata: ~
+

@@ -1,0 +1,1224 @@
+basePath: /api/v1
+definitions:
+  api.ErrorResponse:
+    description: 错误响应格式,包含错误码、错误消息和错误详情
+    properties:
+      code:
+        description: 错误码
+        example: 400
+        type: integer
+      detail:
+        description: 错误详情(可选)
+        example: validation failed
+        type: string
+      message:
+        description: 错误消息
+        example: invalid request
+        type: string
+    type: object
+  api.PaginatedResponse:
+    description: 分页响应格式,包含数据列表和分页信息
+    properties:
+      code:
+        example: 0
+        type: integer
+      data:
+        description: 数据列表
+      message:
+        example: success
+        type: string
+      pagination:
+        allOf:
+        - $ref: '#/definitions/api.PaginationInfo'
+        description: 分页信息
+    type: object
+  api.PaginationInfo:
+    description: 分页信息,包含当前页码、每页数量、总记录数和总页数
+    properties:
+      page:
+        description: 当前页码
+        example: 1
+        type: integer
+      page_size:
+        description: 每页数量
+        example: 20
+        type: integer
+      total:
+        description: 总记录数
+        example: 100
+        type: integer
+      total_page:
+        description: 总页数
+        example: 5
+        type: integer
+    type: object
+  api.Response:
+    description: 统一响应格式,包含状态码、消息和数据
+    properties:
+      code:
+        description: '状态码: 0 表示成功,非 0 表示失败'
+        example: 0
+        type: integer
+      data:
+        description: 响应数据
+      message:
+        description: 响应消息
+        example: success
+        type: string
+    type: object
+  service.AddApproverRequest:
+    description: 加签的请求参数
+    properties:
+      approver:
+        description: 新审批人 ID
+        example: user-002
+        type: string
+      node_id:
+        description: 节点 ID
+        example: node-001
+        type: string
+      reason:
+        description: 加签原因
+        example: 加签原因
+        type: string
+    required:
+    - approver
+    - node_id
+    type: object
+  service.ApproveRequest:
+    description: 审批同意的请求参数
+    properties:
+      attachments:
+        description: 附件列表
+        example:
+        - '["file1.pdf"'
+        - '"file2.pdf"]'
+        items:
+          type: string
+        type: array
+      comment:
+        description: 审批意见
+        example: 同意
+        type: string
+      node_id:
+        description: 节点 ID
+        example: node-001
+        type: string
+    required:
+    - node_id
+    type: object
+  service.BackupInfo:
+    properties:
+      created_at:
+        type: string
+      database_type:
+        type: string
+      filename:
+        type: string
+      path:
+        type: string
+      size:
+        type: integer
+    type: object
+  service.BatchApproveRequest:
+    description: 批量审批的请求参数
+    properties:
+      comment:
+        description: 审批意见
+        type: string
+      node_id:
+        description: 节点 ID
+        type: string
+      task_ids:
+        description: 任务 ID 列表
+        items:
+          type: string
+        minItems: 1
+        type: array
+    required:
+    - node_id
+    - task_ids
+    type: object
+  service.BatchOperationResult:
+    description: 批量操作的结果项
+    properties:
+      error:
+        description: 错误信息(如果失败)
+        type: string
+      success:
+        description: 是否成功
+        type: boolean
+      task_id:
+        description: 任务 ID
+        type: string
+    type: object
+  service.BatchTransferRequest:
+    description: 批量转交的请求参数
+    properties:
+      comment:
+        description: 转交说明
+        type: string
+      new_approver:
+        description: 新审批人 ID
+        type: string
+      node_id:
+        description: 节点 ID
+        type: string
+      old_approver:
+        description: 原审批人 ID
+        type: string
+      task_ids:
+        description: 任务 ID 列表
+        items:
+          type: string
+        minItems: 1
+        type: array
+    required:
+    - new_approver
+    - node_id
+    - old_approver
+    - task_ids
+    type: object
+  service.CreateTaskRequest:
+    type: object
+  service.CreateTemplateRequest:
+    type: object
+  service.RemoveApproverRequest:
+    description: 减签的请求参数
+    properties:
+      approver:
+        description: 要移除的审批人 ID
+        example: user-001
+        type: string
+      node_id:
+        description: 节点 ID
+        example: node-001
+        type: string
+      reason:
+        description: 减签原因
+        example: 减签原因
+        type: string
+    required:
+    - approver
+    - node_id
+    type: object
+  service.ReplaceApproverRequest:
+    description: 替换审批人的请求参数
+    properties:
+      new_approver:
+        description: 新审批人 ID
+        example: user-002
+        type: string
+      node_id:
+        description: 节点 ID
+        example: node-001
+        type: string
+      old_approver:
+        description: 原审批人 ID
+        example: user-001
+        type: string
+      reason:
+        description: 替换原因
+        example: 替换原因
+        type: string
+    required:
+    - new_approver
+    - node_id
+    - old_approver
+    type: object
+  service.RollbackRequest:
+    description: 回退到指定节点的请求参数
+    properties:
+      node_id:
+        description: 目标节点 ID
+        example: node-001
+        type: string
+      reason:
+        description: 回退原因
+        example: 回退原因
+        type: string
+    required:
+    - node_id
+    type: object
+  service.TransferRequest:
+    description: 转交审批的请求参数
+    properties:
+      from_approver:
+        description: 原审批人 ID
+        example: user-001
+        type: string
+      node_id:
+        description: 节点 ID
+        example: node-001
+        type: string
+      reason:
+        description: 转交原因
+        example: 转交原因
+        type: string
+      to_approver:
+        description: 新审批人 ID
+        example: user-002
+        type: string
+    required:
+    - from_approver
+    - node_id
+    - to_approver
+    type: object
+  service.UpdateTemplateRequest:
+    type: object
+host: localhost:8080
+info:
+  contact:
+    email: support@example.com
+    name: API Support
+  description: Approval workflow API server based on approval-kit
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+  termsOfService: http://swagger.io/terms/
+  title: Approval Gin API
+  version: "1.0"
+paths:
+  /backups:
+    get:
+      consumes:
+      - application/json
+      description: 获取所有备份文件列表
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/api.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/service.BackupInfo'
+                  type: array
+              type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 列出所有备份
+      tags:
+      - 系统管理
+    post:
+      consumes:
+      - application/json
+      description: 创建数据库备份文件
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/api.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/service.BackupInfo'
+              type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 创建数据备份
+      tags:
+      - 系统管理
+  /backups/{filename}:
+    delete:
+      consumes:
+      - application/json
+      description: 删除指定的备份文件
+      parameters:
+      - description: 备份文件名
+        in: path
+        name: filename
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 删除备份
+      tags:
+      - 系统管理
+  /backups/{filename}/restore:
+    post:
+      consumes:
+      - application/json
+      description: 从备份文件恢复数据库
+      parameters:
+      - description: 备份文件名
+        in: path
+        name: filename
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 恢复数据备份
+      tags:
+      - 系统管理
+  /tasks:
+    get:
+      consumes:
+      - application/json
+      description: 分页获取任务列表,支持多条件查询、排序
+      parameters:
+      - description: 任务状态
+        in: query
+        name: state
+        type: string
+      - description: 模板 ID
+        in: query
+        name: template_id
+        type: string
+      - description: 业务 ID
+        in: query
+        name: business_id
+        type: string
+      - description: 审批人
+        in: query
+        name: approver
+        type: string
+      - description: 创建时间起始
+        in: query
+        name: created_at_start
+        type: string
+      - description: 创建时间结束
+        in: query
+        name: created_at_end
+        type: string
+      - default: 1
+        description: 页码
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: 每页数量
+        in: query
+        name: page_size
+        type: integer
+      - default: created_at
+        description: 排序字段
+        in: query
+        name: sort_by
+        type: string
+      - default: desc
+        description: 排序方向
+        enum:
+        - asc
+        - desc
+        in: query
+        name: order
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.PaginatedResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 获取任务列表
+      tags:
+      - 查询统计
+    post:
+      consumes:
+      - application/json
+      description: 基于模板创建新的审批任务
+      parameters:
+      - description: 任务信息
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/service.CreateTaskRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 创建审批任务
+      tags:
+      - 任务管理
+  /tasks/{id}:
+    get:
+      consumes:
+      - application/json
+      description: 根据 ID 获取任务详情
+      parameters:
+      - description: 任务 ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 获取任务详情
+      tags:
+      - 任务管理
+  /tasks/{id}/approve:
+    post:
+      consumes:
+      - application/json
+      description: 审批人同意审批任务
+      parameters:
+      - description: 任务 ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 审批信息
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/service.ApproveRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 审批同意
+      tags:
+      - 任务管理
+  /tasks/{id}/approvers:
+    delete:
+      consumes:
+      - application/json
+      description: 从审批人列表中移除指定的审批人
+      parameters:
+      - description: 任务 ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 减签信息
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/service.RemoveApproverRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 减签
+      tags:
+      - 任务管理
+    post:
+      consumes:
+      - application/json
+      description: 在审批人列表中添加新的审批人
+      parameters:
+      - description: 任务 ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 加签信息
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/service.AddApproverRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 加签
+      tags:
+      - 任务管理
+  /tasks/{id}/approvers/replace:
+    post:
+      consumes:
+      - application/json
+      description: 替换审批人,只能替换尚未审批的审批人
+      parameters:
+      - description: 任务 ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 替换信息
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/service.ReplaceApproverRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 替换审批人
+      tags:
+      - 任务管理
+  /tasks/{id}/pause:
+    post:
+      consumes:
+      - application/json
+      description: 暂停任务,只有 pending、submitted、approving 状态可以暂停
+      parameters:
+      - description: 任务 ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 暂停原因
+        in: body
+        name: request
+        required: true
+        schema:
+          properties:
+            reason:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 暂停任务
+      tags:
+      - 任务管理
+  /tasks/{id}/resume:
+    post:
+      consumes:
+      - application/json
+      description: 恢复任务,只有 paused 状态可以恢复
+      parameters:
+      - description: 任务 ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 恢复原因
+        in: body
+        name: request
+        required: true
+        schema:
+          properties:
+            reason:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 恢复任务
+      tags:
+      - 任务管理
+  /tasks/{id}/rollback:
+    post:
+      consumes:
+      - application/json
+      description: 回退到指定节点,只能回退到已完成的节点
+      parameters:
+      - description: 任务 ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 回退信息
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/service.RollbackRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 回退到指定节点
+      tags:
+      - 任务管理
+  /tasks/{id}/submit:
+    post:
+      consumes:
+      - application/json
+      description: 提交任务进入审批流程
+      parameters:
+      - description: 任务 ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 提交审批任务
+      tags:
+      - 任务管理
+  /tasks/{id}/transfer:
+    post:
+      consumes:
+      - application/json
+      description: 将审批任务从原审批人转交给新审批人
+      parameters:
+      - description: 任务 ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 转交信息
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/service.TransferRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 转交审批
+      tags:
+      - 任务管理
+  /tasks/batch/approve:
+    post:
+      consumes:
+      - application/json
+      description: 批量审批多个任务
+      parameters:
+      - description: 批量审批请求
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/service.BatchApproveRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/api.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/service.BatchOperationResult'
+                  type: array
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 批量审批任务
+      tags:
+      - 任务管理
+  /tasks/batch/transfer:
+    post:
+      consumes:
+      - application/json
+      description: 批量转交多个任务
+      parameters:
+      - description: 批量转交请求
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/service.BatchTransferRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/api.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/service.BatchOperationResult'
+                  type: array
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 批量转交任务
+      tags:
+      - 任务管理
+  /templates:
+    get:
+      consumes:
+      - application/json
+      description: 分页获取模板列表,支持搜索和排序
+      parameters:
+      - default: 1
+        description: 页码
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: 每页数量
+        in: query
+        name: page_size
+        type: integer
+      - description: 搜索关键词
+        in: query
+        name: search
+        type: string
+      - default: created_at
+        description: 排序字段
+        in: query
+        name: sort_by
+        type: string
+      - default: desc
+        description: 排序方向
+        enum:
+        - asc
+        - desc
+        in: query
+        name: order
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 获取模板列表
+      tags:
+      - 模板管理
+    post:
+      consumes:
+      - application/json
+      description: 创建新的审批模板
+      parameters:
+      - description: 模板信息
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/service.CreateTemplateRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 创建审批模板
+      tags:
+      - 模板管理
+  /templates/{id}:
+    delete:
+      consumes:
+      - application/json
+      description: 删除指定的审批模板
+      parameters:
+      - description: 模板 ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 删除审批模板
+      tags:
+      - 模板管理
+    get:
+      consumes:
+      - application/json
+      description: 根据 ID 获取模板详情,支持版本查询
+      parameters:
+      - description: 模板 ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 版本号,不传则获取最新版本
+        in: query
+        name: version
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 获取模板详情
+      tags:
+      - 模板管理
+    put:
+      consumes:
+      - application/json
+      description: 更新现有审批模板(创建新版本)
+      parameters:
+      - description: 模板 ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 模板信息
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/service.UpdateTemplateRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 更新审批模板
+      tags:
+      - 模板管理
+  /templates/{id}/versions:
+    get:
+      consumes:
+      - application/json
+      description: 获取指定模板的所有版本号列表
+      parameters:
+      - description: 模板 ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 获取模板版本列表
+      tags:
+      - 模板管理
+securityDefinitions:
+  BearerAuth:
+    description: Type "Bearer" followed by a space and JWT token from Keycloak
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"
