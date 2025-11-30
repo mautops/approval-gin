@@ -71,6 +71,16 @@ func (c *QueryController) ListTasks(ctx *gin.Context) {
 		}
 	}
 
+	// 手动解析 created_at_start 参数
+	if startTimeStr := ctx.Query("created_at_start"); startTimeStr != "" {
+		filter.StartTime = &startTimeStr
+	}
+
+	// 手动解析 created_at_end 参数
+	if endTimeStr := ctx.Query("created_at_end"); endTimeStr != "" {
+		filter.EndTime = &endTimeStr
+	}
+
 	// 设置默认值
 	if filter.Page <= 0 {
 		filter.Page = 1

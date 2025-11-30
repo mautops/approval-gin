@@ -3,6 +3,7 @@ package api
 import (
 	"github.com/gin-gonic/gin"
 	"github.com/mautops/approval-gin/internal/auth"
+	"github.com/mautops/approval-gin/internal/config"
 	"github.com/mautops/approval-gin/internal/websocket"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
@@ -12,7 +13,20 @@ import (
 
 // SetupRoutes 配置路由
 func SetupRoutes(hub *websocket.Hub, validator *auth.KeycloakTokenValidator, db *gorm.DB, fgaClient *auth.OpenFGAClient) *gin.Engine {
+	return SetupRoutesWithConfig(hub, validator, db, fgaClient, "", 0, nil)
+}
+
+// SetupRoutesWithConfig 配置路由(带配置参数)
+func SetupRoutesWithConfig(hub *websocket.Hub, validator *auth.KeycloakTokenValidator, db *gorm.DB, fgaClient *auth.OpenFGAClient, host string, port int, corsConfig *config.CORSConfig) *gin.Engine {
 	router := gin.Default()
+
+	// CORS 中间件(必须在其他中间件之前)
+	if corsConfig != nil && len(corsConfig.AllowedOrigins) > 0 {
+		router.Use(CORSMiddleware(corsConfig.AllowedOrigins))
+	} else {
+		// 默认允许所有源(开发环境)
+		router.Use(CORSMiddleware([]string{"*"}))
+	}
 
 	// 中间件
 	router.Use(RequestIDMiddleware())
@@ -36,39 +50,12 @@ func SetupRoutes(hub *websocket.Hub, validator *auth.KeycloakTokenValidator, db 
 	}
 
 	// Swagger UI 路由
-	router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler,
-		ginSwagger.URL("http://localhost:8080/swagger/doc.json"), // Swagger JSON URL
-	))
+	// 使用相对路径,自动使用当前请求的 origin,避免跨域问题
+	// 这是最佳实践,因为 Swagger UI 和 API 在同一服务器上
+	router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
-	// API v1 路由组
-	v1 := router.Group("/api/v1")
-	{
-		// 模板管理路由
-		templates := v1.Group("/templates")
-		{
-			templates.POST("", nil)                    // Create
-			templates.GET("", nil)                     // List
-			templates.GET("/:id", nil)                 // Get
-			templates.PUT("/:id", nil)                 // Update
-			templates.DELETE("/:id", nil)              // Delete
-			templates.GET("/:id/versions", nil)        // ListVersions
-		}
-
-		// 任务管理路由
-		tasks := v1.Group("/tasks")
-		{
-			tasks.POST("", nil)                        // Create
-			tasks.GET("", nil)                         // List
-			tasks.GET("/:id", nil)                     // Get
-			tasks.POST("/:id/submit", nil)             // Submit
-			tasks.POST("/:id/approve", nil)            // Approve
-			tasks.POST("/:id/reject", nil)             // Reject
-			tasks.POST("/:id/cancel", nil)             // Cancel
-			tasks.POST("/:id/withdraw", nil)            // Withdraw
-			tasks.GET("/:id/records", nil)             // GetRecords
-			tasks.GET("/:id/history", nil)             // GetHistory
-		}
-	}
+	// 注意: 业务路由(模板、任务等)在 setupRoutesWithControllers 中注册
+	// 这里只设置基础路由和中间件
 
 	return router
 }

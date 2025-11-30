@@ -1,24 +1,28 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/mautops/approval-gin/internal/model"
 	"github.com/mautops/approval-gin/internal/service"
 	"github.com/mautops/approval-gin/internal/utils"
+	"github.com/mautops/approval-kit/pkg/template"
+	"gorm.io/gorm"
 )
 
-// TemplateController 模板控制器
 type TemplateController struct {
 	templateService service.TemplateService
+	db              *gorm.DB
 }
 
-// NewTemplateController 创建模板控制器
-func NewTemplateController(templateService service.TemplateService) *TemplateController {
+func NewTemplateController(templateService service.TemplateService, db *gorm.DB) *TemplateController {
 	return &TemplateController{
 		templateService: templateService,
+		db:              db,
 	}
 }
 
@@ -77,15 +81,15 @@ func (c *TemplateController) Create(ctx *gin.Context) {
 // @Security     BearerAuth
 func (c *TemplateController) Get(ctx *gin.Context) {
 	id := ctx.Param("id")
-	
+
 	// 验证模板 ID 格式
 	if err := utils.ValidateTemplateID(id); err != nil {
 		Error(ctx, http.StatusBadRequest, "invalid template id", err.Error())
 		return
 	}
-	
+
 	versionStr := ctx.Query("version")
-	
+
 	version := 0
 	if versionStr != "" {
 		var err error
@@ -102,7 +106,12 @@ func (c *TemplateController) Get(ctx *gin.Context) {
 		return
 	}
 
-	Success(ctx, template)
+	templateWithPositions := c.mergeNodePositions(template, id, version)
+	if templateWithPositions == nil {
+		templateWithPositions = template
+	}
+
+	Success(ctx, templateWithPositions)
 }
 
 // Update 更新模板
@@ -121,19 +130,19 @@ func (c *TemplateController) Get(ctx *gin.Context) {
 // @Security     BearerAuth
 func (c *TemplateController) Update(ctx *gin.Context) {
 	id := ctx.Param("id")
-	
+
 	// 验证模板 ID 格式
 	if err := utils.ValidateTemplateID(id); err != nil {
 		Error(ctx, http.StatusBadRequest, "invalid template id", err.Error())
 		return
 	}
-	
+
 	var req service.UpdateTemplateRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
 		Error(ctx, http.StatusBadRequest, "invalid request", err.Error())
 		return
 	}
-	
+
 	// 输入验证和清理
 	if err := utils.ValidateTemplateName(req.Name); err != nil {
 		Error(ctx, http.StatusBadRequest, "invalid template name", err.Error())
@@ -173,7 +182,7 @@ func (c *TemplateController) Update(ctx *gin.Context) {
 // @Security     BearerAuth
 func (c *TemplateController) Delete(ctx *gin.Context) {
 	id := ctx.Param("id")
-	
+
 	// 验证模板 ID 格式
 	if err := utils.ValidateTemplateID(id); err != nil {
 		Error(ctx, http.StatusBadRequest, "invalid template id", err.Error())
@@ -257,3 +266,108 @@ func (c *TemplateController) ListVersions(ctx *gin.Context) {
 	Success(ctx, versions)
 }
 
+// DeleteVersion 删除模板版本
+// @Summary      删除模板版本
+// @Description  删除指定模板的指定版本
+// @Tags         模板管理
+// @Accept       json
+// @Produce      json
+// @Param        id path string true "模板 ID"
+// @Param        version path int true "版本号"
+// @Success      200  {object}  Response
+// @Failure      400  {object}  ErrorResponse
+// @Failure      404  {object}  ErrorResponse
+// @Failure      500  {object}  ErrorResponse
+// @Router       /templates/{id}/versions/{version} [delete]
+// @Security     BearerAuth
+func (c *TemplateController) DeleteVersion(ctx *gin.Context) {
+	id := ctx.Param("id")
+
+	// 验证模板 ID 格式
+	if err := utils.ValidateTemplateID(id); err != nil {
+		Error(ctx, http.StatusBadRequest, "invalid template id", err.Error())
+		return
+	}
+
+	versionStr := ctx.Param("version")
+	version, err := strconv.Atoi(versionStr)
+	if err != nil {
+		Error(ctx, http.StatusBadRequest, "invalid version", err.Error())
+		return
+	}
+
+	if err := c.templateService.DeleteVersion(ctx.Request.Context(), id, version); err != nil {
+		// 检查是否是版本不存在的错误
+		if strings.Contains(err.Error(), "template version not found") {
+			Error(ctx, http.StatusNotFound, "template version not found", err.Error())
+			return
+		}
+		// 检查是否是最后一个版本的错误
+		if strings.Contains(err.Error(), "cannot delete the last version") {
+			Error(ctx, http.StatusBadRequest, "cannot delete the last version", err.Error())
+			return
+		}
+		Error(ctx, http.StatusInternalServerError, "failed to delete template version", err.Error())
+		return
+	}
+
+	Success(ctx, nil)
+}
+
+func (c *TemplateController) mergeNodePositions(tpl *template.Template, id string, version int) *template.Template {
+	var tm model.TemplateModel
+	query := c.db.Where("id = ?", id)
+
+	if version > 0 {
+		query = query.Where("version = ?", version)
+	} else {
+		query = query.Order("version DESC").Limit(1)
+	}
+
+	if err := query.First(&tm).Error; err != nil {
+		return nil
+	}
+
+	var templateMap map[string]interface{}
+	if err := json.Unmarshal(tm.Data, &templateMap); err != nil {
+		return nil
+	}
+
+	tplJSON, err := json.Marshal(tpl)
+	if err != nil {
+		return nil
+	}
+
+	var tplMap map[string]interface{}
+	if err := json.Unmarshal(tplJSON, &tplMap); err != nil {
+		return nil
+	}
+
+	if nodes, ok := templateMap["nodes"].(map[string]interface{}); ok {
+		if tplNodes, ok := tplMap["nodes"].(map[string]interface{}); ok {
+			for nodeID, node := range nodes {
+				if nodeMap, ok := node.(map[string]interface{}); ok {
+					if position, ok := nodeMap["position"]; ok {
+						if tplNode, exists := tplNodes[nodeID]; exists {
+							if tplNodeMap, ok := tplNode.(map[string]interface{}); ok {
+								tplNodeMap["position"] = position
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	resultJSON, err := json.Marshal(tplMap)
+	if err != nil {
+		return nil
+	}
+
+	var result template.Template
+	if err := json.Unmarshal(resultJSON, &result); err != nil {
+		return nil
+	}
+
+	return &result
+}

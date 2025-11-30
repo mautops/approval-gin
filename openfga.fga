@@ -1,8 +1,4 @@
-package auth
-
-// GetPermissionModel 获取 OpenFGA 权限模型定义
-func GetPermissionModel() string {
-	return `model
+model
   schema 1.1
 
 type user
@@ -22,5 +18,5 @@ type task
     define operator: [user] or creator or approver
     define submitter: [user] or creator
     define canceler: [user] or creator
-    define withdrawer: [user] or creator`
-}
+    define withdrawer: [user] or creator
+

@@ -28,6 +28,7 @@ type TaskService interface {
 	Resume(ctx context.Context, id string, reason string) error
 	RollbackToNode(ctx context.Context, id string, req *RollbackRequest) error
 	ReplaceApprover(ctx context.Context, id string, req *ReplaceApproverRequest) error
+	HandleTimeout(ctx context.Context, id string) error
 	// 批量操作方法
 	BatchApprove(ctx context.Context, req *BatchApproveRequest) ([]BatchOperationResult, error)
 	BatchTransfer(ctx context.Context, req *BatchTransferRequest) ([]BatchOperationResult, error)
@@ -407,6 +408,24 @@ func (s *taskService) ReplaceApprover(ctx context.Context, id string, req *Repla
 		if userID != "" {
 			details := fmt.Sprintf(`{"task_id":"%s","node_id":"%s","old_approver":"%s","new_approver":"%s","reason":"%s"}`, id, req.NodeID, req.OldApprover, req.NewApprover, req.Reason)
 			_ = s.auditLogSvc.RecordAction(ctx, userID, "replace_approver", "task", id, details)
+		}
+	}
+
+	return nil
+}
+
+// HandleTimeout 处理任务超时
+func (s *taskService) HandleTimeout(ctx context.Context, id string) error {
+	if err := s.taskMgr.HandleTimeout(id); err != nil {
+		return err
+	}
+
+	// 记录审计日志
+	if s.auditLogSvc != nil {
+		userID := getUserIDFromContext(ctx)
+		if userID != "" {
+			details := fmt.Sprintf(`{"task_id":"%s"}`, id)
+			_ = s.auditLogSvc.RecordAction(ctx, userID, "handle_timeout", "task", id, details)
 		}
 	}
 

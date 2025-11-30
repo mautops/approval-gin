@@ -53,7 +53,7 @@ and provide REST API interfaces for approval workflow management.`,
 		querySvc := service.NewQueryService(ctr.DB(), ctr.TaskManager())
 
 		// 4. 初始化控制器
-		templateController := api.NewTemplateController(templateSvc)
+		templateController := api.NewTemplateController(templateSvc, ctr.DB())
 		taskController := api.NewTaskController(taskSvc)
 		queryController := api.NewQueryController(querySvc)
 		backupController := api.NewBackupController(ctr.BackupService())
@@ -62,8 +62,8 @@ and provide REST API interfaces for approval workflow management.`,
 		hub := websocket.NewHub()
 		go hub.Run()
 
-		// 6. 设置路由
-		router := setupRoutesWithControllers(hub, ctr, templateController, taskController, queryController, backupController)
+	// 6. 设置路由
+	router := setupRoutesWithControllers(hub, ctr, templateController, taskController, queryController, backupController, cfg)
 
 		// 7. 启动服务器
 		addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
@@ -107,8 +107,15 @@ func setupRoutesWithControllers(
 	taskController *api.TaskController,
 	queryController *api.QueryController,
 	backupController *api.BackupController,
+	cfg *config.Config,
 ) *gin.Engine {
-	router := api.SetupRoutes(hub, ctr.KeycloakValidator(), ctr.DB(), ctr.OpenFGAClient())
+	// 使用配置的 host 和 port 设置 Swagger URL
+	// 如果 host 是 0.0.0.0,使用 localhost 作为 Swagger URL
+	swaggerHost := cfg.Server.Host
+	if swaggerHost == "0.0.0.0" {
+		swaggerHost = "localhost"
+	}
+	router := api.SetupRoutesWithConfig(hub, ctr.KeycloakValidator(), ctr.DB(), ctr.OpenFGAClient(), swaggerHost, cfg.Server.Port, &cfg.CORS)
 
 	// API v1 路由组
 	v1 := router.Group("/api/v1")
@@ -122,6 +129,7 @@ func setupRoutesWithControllers(
 			templates.PUT("/:id", templateController.Update)
 			templates.DELETE("/:id", templateController.Delete)
 			templates.GET("/:id/versions", templateController.ListVersions)
+			templates.DELETE("/:id/versions/:version", templateController.DeleteVersion)
 		}
 
 		// 任务管理路由
@@ -143,6 +151,7 @@ func setupRoutesWithControllers(
 			tasks.POST("/:id/resume", taskController.Resume)
 			tasks.POST("/:id/rollback", taskController.RollbackToNode)
 			tasks.POST("/:id/approvers/replace", taskController.ReplaceApprover)
+			tasks.POST("/:id/timeout", taskController.HandleTimeout)
 			// 批量操作路由
 			tasks.POST("/batch/approve", taskController.BatchApprove)
 			tasks.POST("/batch/transfer", taskController.BatchTransfer)

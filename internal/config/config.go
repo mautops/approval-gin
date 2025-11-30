@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/spf13/viper"
+	"github.com/subosito/gotenv"
 )
 
 // Config 应用配置
@@ -69,6 +70,10 @@ type LogConfig struct {
 
 // Load 加载配置,支持配置文件和环境变量
 func Load(configPath string) (*Config, error) {
+	// 首先尝试加载 .env 文件(如果存在)
+	// 忽略错误,因为 .env 文件是可选的
+	_ = gotenv.Load()
+	
 	v := viper.New()
 	
 	// 设置默认值

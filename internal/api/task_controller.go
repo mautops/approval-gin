@@ -511,3 +511,29 @@ func (c *TaskController) BatchTransfer(ctx *gin.Context) {
 	Success(ctx, results)
 }
 
+// HandleTimeout 处理任务超时
+// @Summary      处理任务超时
+// @Description  处理任务超时,如果任务已超时,将任务状态转换为 timeout
+// @Tags         任务管理
+// @Accept       json
+// @Produce      json
+// @Param        id path string true "任务 ID"
+// @Success      200  {object}  Response
+// @Failure      400  {object}  ErrorResponse
+// @Failure      404  {object}  ErrorResponse
+// @Failure      500  {object}  ErrorResponse
+// @Router       /tasks/{id}/timeout [post]
+// @Security     BearerAuth
+func (c *TaskController) HandleTimeout(ctx *gin.Context) {
+	id := ctx.Param("id")
+	if !c.validateTaskID(ctx, id) {
+		return
+	}
+
+	if !c.handleServiceError(ctx, c.taskService.HandleTimeout(ctx.Request.Context(), id), "handle timeout") {
+		return
+	}
+
+	Success(ctx, nil)
+}
+

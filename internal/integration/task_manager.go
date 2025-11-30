@@ -16,30 +16,33 @@ import (
 )
 
 // taskAdapter 适配器,让 task.Task 实现 pkgSM.TransitionableTask 接口
+// pkg/task.Task 是一个结构体,没有方法,需要通过适配器实现接口
 type taskAdapter struct {
 	task *task.Task
 }
 
 func (a *taskAdapter) GetState() types.TaskState {
-	return a.task.GetState()
+	return a.task.State
 }
 
 func (a *taskAdapter) SetState(state types.TaskState) {
-	a.task.SetState(state)
+	a.task.State = state
 }
 
 func (a *taskAdapter) GetUpdatedAt() time.Time {
-	return a.task.GetUpdatedAt()
+	return a.task.UpdatedAt
 }
 
 func (a *taskAdapter) SetUpdatedAt(t time.Time) {
-	a.task.SetUpdatedAt(t)
+	a.task.UpdatedAt = t
 }
 
 func (a *taskAdapter) GetStateHistory() []*pkgSM.StateChange {
-	history := a.task.GetStateHistory()
-	result := make([]*pkgSM.StateChange, len(history))
-	for i, sc := range history {
+	if a.task.StateHistory == nil {
+		return []*pkgSM.StateChange{}
+	}
+	result := make([]*pkgSM.StateChange, len(a.task.StateHistory))
+	for i, sc := range a.task.StateHistory {
 		result[i] = &pkgSM.StateChange{
 			From:   sc.From,
 			To:     sc.To,
@@ -51,13 +54,102 @@ func (a *taskAdapter) GetStateHistory() []*pkgSM.StateChange {
 }
 
 func (a *taskAdapter) AddStateChange(change *pkgSM.StateChange) {
-	a.task.AddStateChangeRecord(change.From, change.To, change.Reason, change.Time)
-	// 注意: 状态历史会通过 taskAdapter 的 manager 保存到数据库
-	// 这里只更新内存中的任务对象
+	if a.task.StateHistory == nil {
+		a.task.StateHistory = []*task.StateChange{}
+	}
+	a.task.StateHistory = append(a.task.StateHistory, &task.StateChange{
+		From:   change.From,
+		To:     change.To,
+		Reason: change.Reason,
+		Time:   change.Time,
+	})
 }
 
 func (a *taskAdapter) Clone() pkgSM.TransitionableTask {
-	return &taskAdapter{task: a.task.Clone()}
+	// 创建任务副本
+	taskCopy := &task.Task{
+		ID:             a.task.ID,
+		TemplateID:     a.task.TemplateID,
+		TemplateVersion: a.task.TemplateVersion,
+		BusinessID:     a.task.BusinessID,
+		Params:         make(json.RawMessage, len(a.task.Params)),
+		State:          a.task.State,
+		CurrentNode:    a.task.CurrentNode,
+		PausedAt:       a.task.PausedAt,
+		PausedState:    a.task.PausedState,
+		CreatedAt:      a.task.CreatedAt,
+		UpdatedAt:      a.task.UpdatedAt,
+		SubmittedAt:    a.task.SubmittedAt,
+		NodeOutputs:    make(map[string]json.RawMessage),
+		Approvers:      make(map[string][]string),
+		Approvals:      make(map[string]map[string]*task.Approval),
+		CompletedNodes: make([]string, len(a.task.CompletedNodes)),
+		Records:         make([]*task.Record, len(a.task.Records)),
+		StateHistory:   make([]*task.StateChange, len(a.task.StateHistory)),
+	}
+	
+	// 复制 Params
+	copy(taskCopy.Params, a.task.Params)
+	
+	// 复制 NodeOutputs
+	for k, v := range a.task.NodeOutputs {
+		taskCopy.NodeOutputs[k] = make(json.RawMessage, len(v))
+		copy(taskCopy.NodeOutputs[k], v)
+	}
+	
+	// 复制 Approvers
+	for k, v := range a.task.Approvers {
+		taskCopy.Approvers[k] = make([]string, len(v))
+		copy(taskCopy.Approvers[k], v)
+	}
+	
+	// 复制 Approvals
+	for k, v := range a.task.Approvals {
+		taskCopy.Approvals[k] = make(map[string]*task.Approval)
+		for k2, v2 := range v {
+			if v2 != nil {
+				taskCopy.Approvals[k][k2] = &task.Approval{
+					Result:    v2.Result,
+					Comment:   v2.Comment,
+					CreatedAt: v2.CreatedAt,
+				}
+			}
+		}
+	}
+	
+	// 复制 CompletedNodes
+	copy(taskCopy.CompletedNodes, a.task.CompletedNodes)
+	
+	// 复制 Records
+	for i, r := range a.task.Records {
+		if r != nil {
+			taskCopy.Records[i] = &task.Record{
+				ID:         r.ID,
+				TaskID:     r.TaskID,
+				NodeID:     r.NodeID,
+				Approver:   r.Approver,
+				Result:     r.Result,
+				Comment:    r.Comment,
+				CreatedAt:  r.CreatedAt,
+				Attachments: make([]string, len(r.Attachments)),
+			}
+			copy(taskCopy.Records[i].Attachments, r.Attachments)
+		}
+	}
+	
+	// 复制 StateHistory
+	for i, sc := range a.task.StateHistory {
+		if sc != nil {
+			taskCopy.StateHistory[i] = &task.StateChange{
+				From:   sc.From,
+				To:     sc.To,
+				Reason: sc.Reason,
+				Time:   sc.Time,
+			}
+		}
+	}
+	
+	return &taskAdapter{task: taskCopy}
 }
 
 // dbTaskManager 基于数据库的任务管理器
@@ -184,13 +276,13 @@ func (m *dbTaskManager) Submit(id string) error {
 	}
 
 	// 2. 验证当前状态允许提交
-	if !m.stateMachine.CanTransition(tsk.GetState(), types.TaskStateSubmitted) {
-		return fmt.Errorf("invalid state transition: cannot submit task in state %q", tsk.GetState())
+	if !m.stateMachine.CanTransition(tsk.State, types.TaskStateSubmitted) {
+		return fmt.Errorf("invalid state transition: cannot submit task in state %q", tsk.State)
 	}
 
 	// 3. 使用状态机执行状态转换
 	adapter := &taskAdapter{task: tsk}
-	oldState := tsk.GetState()
+	oldState := tsk.State
 	newTaskAdapter, err := m.stateMachine.Transition(adapter, types.TaskStateSubmitted, "task submitted")
 	if err != nil {
 		return fmt.Errorf("state transition failed: %w", err)
@@ -200,7 +292,7 @@ func (m *dbTaskManager) Submit(id string) error {
 	newTask := newTaskAdapter.(*taskAdapter).task
 
 	// 保存状态历史到数据库
-	if err := m.saveStateHistory(id, oldState, newTask.GetState(), "task submitted", "system"); err != nil {
+	if err := m.saveStateHistory(id, oldState, newTask.State, "task submitted", "system"); err != nil {
 		return fmt.Errorf("failed to save state history: %w", err)
 	}
 
@@ -270,7 +362,7 @@ func (m *dbTaskManager) Approve(id string, nodeID string, approver string, comme
 	}
 
 	// 2. 验证任务状态(只有 submitted 或 approving 状态才能审批)
-	currentState := tsk.GetState()
+	currentState := tsk.State
 	if currentState != types.TaskStateSubmitted && currentState != types.TaskStateApproving {
 		return fmt.Errorf("task state %q cannot be approved", currentState)
 	}
@@ -360,7 +452,7 @@ func (m *dbTaskManager) Approve(id string, nodeID string, approver string, comme
 	// 简化处理: 如果只有一个审批人且就是当前审批人,且已同意,将任务状态转换为已通过
 	if len(approvers) == 1 && approvers[0] == approver {
 		// 单人审批模式,审批人已同意
-		if m.stateMachine.CanTransition(tsk.GetState(), types.TaskStateApproved) {
+		if m.stateMachine.CanTransition(tsk.State, types.TaskStateApproved) {
 			shouldTransition = true
 		}
 	} else if len(approvers) > 1 {
@@ -373,12 +465,12 @@ func (m *dbTaskManager) Approve(id string, nodeID string, approver string, comme
 				break
 			}
 		}
-		if allApproved && m.stateMachine.CanTransition(tsk.GetState(), types.TaskStateApproved) {
+		if allApproved && m.stateMachine.CanTransition(tsk.State, types.TaskStateApproved) {
 			shouldTransition = true
 		}
 	} else if len(approvers) == 0 {
 		// 如果没有审批人列表,假设是单人审批模式(当前审批人就是唯一审批人)
-		if m.stateMachine.CanTransition(tsk.GetState(), types.TaskStateApproved) {
+		if m.stateMachine.CanTransition(tsk.State, types.TaskStateApproved) {
 			shouldTransition = true
 		}
 	}
@@ -386,7 +478,7 @@ func (m *dbTaskManager) Approve(id string, nodeID string, approver string, comme
 	// 8. 如果需要转换状态,执行状态转换
 	if shouldTransition {
 		adapter := &taskAdapter{task: tsk}
-		oldState := tsk.GetState()
+		oldState := tsk.State
 		newTaskAdapter, err := m.stateMachine.Transition(adapter, types.TaskStateApproved, "all approvers approved")
 		if err != nil {
 			return fmt.Errorf("state transition failed: %w", err)
@@ -394,7 +486,7 @@ func (m *dbTaskManager) Approve(id string, nodeID string, approver string, comme
 		tsk = newTaskAdapter.(*taskAdapter).task
 
 		// 保存状态历史到数据库
-		if err := m.saveStateHistory(id, oldState, tsk.GetState(), "all approvers approved", approver); err != nil {
+		if err := m.saveStateHistory(id, oldState, tsk.State, "all approvers approved", approver); err != nil {
 			return fmt.Errorf("failed to save state history: %w", err)
 		}
 
@@ -473,7 +565,7 @@ func (m *dbTaskManager) ApproveWithAttachments(id string, nodeID string, approve
 	}
 
 	// 2. 验证任务状态(只有 submitted 或 approving 状态才能审批)
-	currentState := tsk.GetState()
+	currentState := tsk.State
 	if currentState != types.TaskStateSubmitted && currentState != types.TaskStateApproving {
 		return fmt.Errorf("task state %q cannot be approved", currentState)
 	}
@@ -563,7 +655,7 @@ func (m *dbTaskManager) ApproveWithAttachments(id string, nodeID string, approve
 	shouldTransition := false
 
 	if len(approvers) == 1 && approvers[0] == approver {
-		if m.stateMachine.CanTransition(tsk.GetState(), types.TaskStateApproved) {
+		if m.stateMachine.CanTransition(tsk.State, types.TaskStateApproved) {
 			shouldTransition = true
 		}
 	} else if len(approvers) > 1 {
@@ -575,11 +667,11 @@ func (m *dbTaskManager) ApproveWithAttachments(id string, nodeID string, approve
 				break
 			}
 		}
-		if allApproved && m.stateMachine.CanTransition(tsk.GetState(), types.TaskStateApproved) {
+		if allApproved && m.stateMachine.CanTransition(tsk.State, types.TaskStateApproved) {
 			shouldTransition = true
 		}
 	} else if len(approvers) == 0 {
-		if m.stateMachine.CanTransition(tsk.GetState(), types.TaskStateApproved) {
+		if m.stateMachine.CanTransition(tsk.State, types.TaskStateApproved) {
 			shouldTransition = true
 		}
 	}
@@ -587,7 +679,7 @@ func (m *dbTaskManager) ApproveWithAttachments(id string, nodeID string, approve
 	// 8. 如果需要转换状态,执行状态转换
 	if shouldTransition {
 		adapter := &taskAdapter{task: tsk}
-		oldState := tsk.GetState()
+		oldState := tsk.State
 		newTaskAdapter, err := m.stateMachine.Transition(adapter, types.TaskStateApproved, "all approvers approved")
 		if err != nil {
 			return fmt.Errorf("state transition failed: %w", err)
@@ -595,7 +687,7 @@ func (m *dbTaskManager) ApproveWithAttachments(id string, nodeID string, approve
 		tsk = newTaskAdapter.(*taskAdapter).task
 
 		// 保存状态历史到数据库
-		if err := m.saveStateHistory(id, oldState, tsk.GetState(), "all approvers approved", approver); err != nil {
+		if err := m.saveStateHistory(id, oldState, tsk.State, "all approvers approved", approver); err != nil {
 			return fmt.Errorf("failed to save state history: %w", err)
 		}
 
@@ -671,7 +763,7 @@ func (m *dbTaskManager) Reject(id string, nodeID string, approver string, commen
 	}
 
 	// 2. 验证任务状态(只有 submitted 或 approving 状态才能拒绝)
-	currentState := tsk.GetState()
+	currentState := tsk.State
 	if currentState != types.TaskStateSubmitted && currentState != types.TaskStateApproving {
 		return fmt.Errorf("task state %q cannot be rejected", currentState)
 	}
@@ -738,7 +830,7 @@ func (m *dbTaskManager) Reject(id string, nodeID string, approver string, commen
 	tsk.Records = append(tsk.Records, record)
 
 	// 7. 拒绝后,将任务状态转换为 rejected
-	if m.stateMachine.CanTransition(tsk.GetState(), types.TaskStateRejected) {
+	if m.stateMachine.CanTransition(tsk.State, types.TaskStateRejected) {
 		adapter := &taskAdapter{task: tsk}
 		newTaskAdapter, err := m.stateMachine.Transition(adapter, types.TaskStateRejected, "task rejected")
 		if err != nil {
@@ -812,7 +904,7 @@ func (m *dbTaskManager) RejectWithAttachments(id string, nodeID string, approver
 	}
 
 	// 2. 验证任务状态(只有 submitted 或 approving 状态才能拒绝)
-	currentState := tsk.GetState()
+	currentState := tsk.State
 	if currentState != types.TaskStateSubmitted && currentState != types.TaskStateApproving {
 		return fmt.Errorf("task state %q cannot be rejected", currentState)
 	}
@@ -882,7 +974,7 @@ func (m *dbTaskManager) RejectWithAttachments(id string, nodeID string, approver
 	tsk.Records = append(tsk.Records, record)
 
 	// 7. 拒绝后,将任务状态转换为 rejected
-	if m.stateMachine.CanTransition(tsk.GetState(), types.TaskStateRejected) {
+	if m.stateMachine.CanTransition(tsk.State, types.TaskStateRejected) {
 		adapter := &taskAdapter{task: tsk}
 		newTaskAdapter, err := m.stateMachine.Transition(adapter, types.TaskStateRejected, "task rejected")
 		if err != nil {
@@ -957,8 +1049,8 @@ func (m *dbTaskManager) Cancel(id string, reason string) error {
 	}
 
 	// 2. 验证当前状态允许取消
-	if !m.stateMachine.CanTransition(tsk.GetState(), types.TaskStateCancelled) {
-		return fmt.Errorf("invalid state transition: cannot cancel task in state %q", tsk.GetState())
+	if !m.stateMachine.CanTransition(tsk.State, types.TaskStateCancelled) {
+		return fmt.Errorf("invalid state transition: cannot cancel task in state %q", tsk.State)
 	}
 
 	// 3. 使用状态机执行状态转换
@@ -1009,13 +1101,13 @@ func (m *dbTaskManager) Withdraw(id string, reason string) error {
 	}
 
 	// 2. 检查当前状态是否允许撤回
-	currentState := tsk.GetState()
+	currentState := tsk.State
 	if currentState != types.TaskStateSubmitted && currentState != types.TaskStateApproving {
 		return fmt.Errorf("cannot withdraw task in state %q, only submitted or approving tasks can be withdrawn", currentState)
 	}
 
 	// 3. 检查是否有审批记录(如果有,不允许撤回)
-	records := tsk.GetRecords()
+	records := tsk.Records
 	if len(records) > 0 {
 		return fmt.Errorf("cannot withdraw task with approval records")
 	}
@@ -1459,11 +1551,11 @@ func (m *dbTaskManager) Query(filter *task.TaskFilter) ([]*task.Task, error) {
 	}
 
 	// 按时间范围过滤
-	if !filter.StartTime.IsZero() {
-		query = query.Where("created_at >= ?", filter.StartTime)
+	if filter.CreatedAfter != nil {
+		query = query.Where("created_at >= ?", *filter.CreatedAfter)
 	}
-	if !filter.EndTime.IsZero() {
-		query = query.Where("created_at <= ?", filter.EndTime)
+	if filter.CreatedBefore != nil {
+		query = query.Where("created_at <= ?", *filter.CreatedBefore)
 	}
 
 	// 2. 查询数据库
@@ -1562,7 +1654,7 @@ func (m *dbTaskManager) HandleTimeout(id string) error {
 
 	// 2. 检查任务是否超时
 	// 只有 submitted 或 approving 状态的任务才需要检查超时
-	currentState := tsk.GetState()
+	currentState := tsk.State
 	if currentState != types.TaskStateSubmitted && currentState != types.TaskStateApproving {
 		// 任务不在需要检查超时的状态,直接返回
 		return nil
@@ -1676,7 +1768,7 @@ func (m *dbTaskManager) Pause(id string, reason string) error {
 	}
 
 	// 2. 检查当前状态是否允许暂停
-	currentState := tsk.GetState()
+	currentState := tsk.State
 	if !m.stateMachine.CanTransition(currentState, types.TaskStatePaused) {
 		return fmt.Errorf("cannot pause task in state %q", currentState)
 	}
@@ -1742,7 +1834,7 @@ func (m *dbTaskManager) Resume(id string, reason string) error {
 	}
 
 	// 2. 检查当前状态是否是 paused
-	currentState := tsk.GetState()
+	currentState := tsk.State
 	if currentState != types.TaskStatePaused {
 		return fmt.Errorf("cannot resume task in state %q, only paused tasks can be resumed", currentState)
 	}
@@ -1914,7 +2006,7 @@ func (m *dbTaskManager) RollbackToNode(id string, nodeID string, reason string) 
 
 	// 11. 更新任务状态
 	// 回退操作允许从终态回退,所以需要特殊处理
-	currentState := tsk.GetState()
+	currentState := tsk.State
 	
 	// 如果当前是终态(approved/rejected/cancelled/timeout),允许回退
 	// 这种情况下不通过状态机,直接设置状态
@@ -1922,8 +2014,17 @@ func (m *dbTaskManager) RollbackToNode(id string, nodeID string, reason string) 
 		currentState == types.TaskStateRejected || 
 		currentState == types.TaskStateCancelled || 
 		currentState == types.TaskStateTimeout {
-		tsk.SetState(targetState)
-		tsk.AddStateChangeRecord(currentState, targetState, reason, time.Now())
+		tsk.State = targetState
+		// 添加状态变更记录
+		if tsk.StateHistory == nil {
+			tsk.StateHistory = []*task.StateChange{}
+		}
+		tsk.StateHistory = append(tsk.StateHistory, &task.StateChange{
+			From:   currentState,
+			To:     targetState,
+			Reason: reason,
+			Time:   time.Now(),
+		})
 	} else {
 		// 如果当前不是终态,使用状态机进行状态转换
 		if !m.stateMachine.CanTransition(currentState, targetState) {
