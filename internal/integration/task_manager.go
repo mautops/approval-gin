@@ -68,41 +68,41 @@ func (a *taskAdapter) AddStateChange(change *pkgSM.StateChange) {
 func (a *taskAdapter) Clone() pkgSM.TransitionableTask {
 	// 创建任务副本
 	taskCopy := &task.Task{
-		ID:             a.task.ID,
-		TemplateID:     a.task.TemplateID,
+		ID:              a.task.ID,
+		TemplateID:      a.task.TemplateID,
 		TemplateVersion: a.task.TemplateVersion,
-		BusinessID:     a.task.BusinessID,
-		Params:         make(json.RawMessage, len(a.task.Params)),
-		State:          a.task.State,
-		CurrentNode:    a.task.CurrentNode,
-		PausedAt:       a.task.PausedAt,
-		PausedState:    a.task.PausedState,
-		CreatedAt:      a.task.CreatedAt,
-		UpdatedAt:      a.task.UpdatedAt,
-		SubmittedAt:    a.task.SubmittedAt,
-		NodeOutputs:    make(map[string]json.RawMessage),
-		Approvers:      make(map[string][]string),
-		Approvals:      make(map[string]map[string]*task.Approval),
-		CompletedNodes: make([]string, len(a.task.CompletedNodes)),
+		BusinessID:      a.task.BusinessID,
+		Params:          make(json.RawMessage, len(a.task.Params)),
+		State:           a.task.State,
+		CurrentNode:     a.task.CurrentNode,
+		PausedAt:        a.task.PausedAt,
+		PausedState:     a.task.PausedState,
+		CreatedAt:       a.task.CreatedAt,
+		UpdatedAt:       a.task.UpdatedAt,
+		SubmittedAt:     a.task.SubmittedAt,
+		NodeOutputs:     make(map[string]json.RawMessage),
+		Approvers:       make(map[string][]string),
+		Approvals:       make(map[string]map[string]*task.Approval),
+		CompletedNodes:  make([]string, len(a.task.CompletedNodes)),
 		Records:         make([]*task.Record, len(a.task.Records)),
-		StateHistory:   make([]*task.StateChange, len(a.task.StateHistory)),
+		StateHistory:    make([]*task.StateChange, len(a.task.StateHistory)),
 	}
-	
+
 	// 复制 Params
 	copy(taskCopy.Params, a.task.Params)
-	
+
 	// 复制 NodeOutputs
 	for k, v := range a.task.NodeOutputs {
 		taskCopy.NodeOutputs[k] = make(json.RawMessage, len(v))
 		copy(taskCopy.NodeOutputs[k], v)
 	}
-	
+
 	// 复制 Approvers
 	for k, v := range a.task.Approvers {
 		taskCopy.Approvers[k] = make([]string, len(v))
 		copy(taskCopy.Approvers[k], v)
 	}
-	
+
 	// 复制 Approvals
 	for k, v := range a.task.Approvals {
 		taskCopy.Approvals[k] = make(map[string]*task.Approval)
@@ -116,27 +116,27 @@ func (a *taskAdapter) Clone() pkgSM.TransitionableTask {
 			}
 		}
 	}
-	
+
 	// 复制 CompletedNodes
 	copy(taskCopy.CompletedNodes, a.task.CompletedNodes)
-	
+
 	// 复制 Records
 	for i, r := range a.task.Records {
 		if r != nil {
 			taskCopy.Records[i] = &task.Record{
-				ID:         r.ID,
-				TaskID:     r.TaskID,
-				NodeID:     r.NodeID,
-				Approver:   r.Approver,
-				Result:     r.Result,
-				Comment:    r.Comment,
-				CreatedAt:  r.CreatedAt,
+				ID:          r.ID,
+				TaskID:      r.TaskID,
+				NodeID:      r.NodeID,
+				Approver:    r.Approver,
+				Result:      r.Result,
+				Comment:     r.Comment,
+				CreatedAt:   r.CreatedAt,
 				Attachments: make([]string, len(r.Attachments)),
 			}
 			copy(taskCopy.Records[i].Attachments, r.Attachments)
 		}
 	}
-	
+
 	// 复制 StateHistory
 	for i, sc := range a.task.StateHistory {
 		if sc != nil {
@@ -148,18 +148,18 @@ func (a *taskAdapter) Clone() pkgSM.TransitionableTask {
 			}
 		}
 	}
-	
+
 	return &taskAdapter{task: taskCopy}
 }
 
 // dbTaskManager 基于数据库的任务管理器
 type dbTaskManager struct {
-	db          *gorm.DB
-	templateMgr template.TemplateManager
+	db           *gorm.DB
+	templateMgr  template.TemplateManager
 	stateMachine pkgSM.StateMachine
 	eventHandler event.EventHandler
-	recordRepo  repository.ApprovalRecordRepository
-	historyRepo repository.StateHistoryRepository
+	recordRepo   repository.ApprovalRecordRepository
+	historyRepo  repository.StateHistoryRepository
 }
 
 // NewTaskManager 创建任务管理器
@@ -169,14 +169,14 @@ func NewTaskManager(db *gorm.DB, templateMgr template.TemplateManager, stateMach
 	if stateMachine == nil {
 		stateMachine = pkgSM.NewStateMachine()
 	}
-	
+
 	return &dbTaskManager{
-		db:          db,
-		templateMgr: templateMgr,
+		db:           db,
+		templateMgr:  templateMgr,
 		stateMachine: stateMachine,
 		eventHandler: eventHandler,
-		recordRepo:  repository.NewApprovalRecordRepository(db),
-		historyRepo: repository.NewStateHistoryRepository(db),
+		recordRepo:   repository.NewApprovalRecordRepository(db),
+		historyRepo:  repository.NewStateHistoryRepository(db),
 	}
 }
 
@@ -190,7 +190,7 @@ func (m *dbTaskManager) Create(templateID string, businessID string, params json
 
 	// 2. 查找开始节点
 	startNodeID := findStartNode(tpl)
-	
+
 	// 3. 创建任务对象
 	tsk := &task.Task{
 		ID:              generateTaskID(),
@@ -221,16 +221,16 @@ func (m *dbTaskManager) Create(templateID string, businessID string, params json
 
 	// 4. 保存到数据库
 	taskModel := &model.TaskModel{
-		ID:             tsk.ID,
-		TemplateID:     tsk.TemplateID,
+		ID:              tsk.ID,
+		TemplateID:      tsk.TemplateID,
 		TemplateVersion: tsk.TemplateVersion,
-		BusinessID:     tsk.BusinessID,
-		State:          string(tsk.State),
-		CurrentNode:    tsk.CurrentNode,
-		Data:           data,
-		CreatedAt:      tsk.CreatedAt,
-		UpdatedAt:      tsk.UpdatedAt,
-		SubmittedAt:    tsk.SubmittedAt,
+		BusinessID:      tsk.BusinessID,
+		State:           string(tsk.State),
+		CurrentNode:     tsk.CurrentNode,
+		Data:            data,
+		CreatedAt:       tsk.CreatedAt,
+		UpdatedAt:       tsk.UpdatedAt,
+		SubmittedAt:     tsk.SubmittedAt,
 	}
 
 	if err := m.db.Create(taskModel).Error; err != nil {
@@ -334,16 +334,16 @@ func (m *dbTaskManager) Submit(id string) error {
 
 	// 7. 更新数据库
 	taskModel := &model.TaskModel{
-		ID:             newTask.ID,
-		TemplateID:     newTask.TemplateID,
+		ID:              newTask.ID,
+		TemplateID:      newTask.TemplateID,
 		TemplateVersion: newTask.TemplateVersion,
-		BusinessID:     newTask.BusinessID,
-		State:          string(newTask.State),
-		CurrentNode:    newTask.CurrentNode,
-		Data:           data,
-		CreatedAt:      newTask.CreatedAt,
-		UpdatedAt:      newTask.UpdatedAt,
-		SubmittedAt:    newTask.SubmittedAt,
+		BusinessID:      newTask.BusinessID,
+		State:           string(newTask.State),
+		CurrentNode:     newTask.CurrentNode,
+		Data:            data,
+		CreatedAt:       newTask.CreatedAt,
+		UpdatedAt:       newTask.UpdatedAt,
+		SubmittedAt:     newTask.SubmittedAt,
 	}
 
 	if err := m.db.Model(&model.TaskModel{}).Where("id = ?", id).Updates(taskModel).Error; err != nil {
@@ -415,13 +415,13 @@ func (m *dbTaskManager) Approve(id string, nodeID string, approver string, comme
 
 	// 6. 生成审批记录
 	record := &task.Record{
-		ID:         generateRecordID(),
-		TaskID:     id,
-		NodeID:     nodeID,
-		Approver:   approver,
-		Result:     "approve",
-		Comment:    comment,
-		CreatedAt:  time.Now(),
+		ID:          generateRecordID(),
+		TaskID:      id,
+		NodeID:      nodeID,
+		Approver:    approver,
+		Result:      "approve",
+		Comment:     comment,
+		CreatedAt:   time.Now(),
 		Attachments: []string{},
 	}
 
@@ -532,16 +532,16 @@ func (m *dbTaskManager) Approve(id string, nodeID string, approver string, comme
 	}
 
 	taskModel := &model.TaskModel{
-		ID:             tsk.ID,
-		TemplateID:     tsk.TemplateID,
+		ID:              tsk.ID,
+		TemplateID:      tsk.TemplateID,
 		TemplateVersion: tsk.TemplateVersion,
-		BusinessID:     tsk.BusinessID,
-		State:          string(tsk.State),
-		CurrentNode:    tsk.CurrentNode,
-		Data:           data,
-		CreatedAt:      tsk.CreatedAt,
-		UpdatedAt:      tsk.UpdatedAt,
-		SubmittedAt:    tsk.SubmittedAt,
+		BusinessID:      tsk.BusinessID,
+		State:           string(tsk.State),
+		CurrentNode:     tsk.CurrentNode,
+		Data:            data,
+		CreatedAt:       tsk.CreatedAt,
+		UpdatedAt:       tsk.UpdatedAt,
+		SubmittedAt:     tsk.SubmittedAt,
 	}
 
 	if err := m.db.Model(&model.TaskModel{}).Where("id = ?", id).Updates(taskModel).Error; err != nil {
@@ -621,13 +621,13 @@ func (m *dbTaskManager) ApproveWithAttachments(id string, nodeID string, approve
 
 	// 6. 生成审批记录
 	record := &task.Record{
-		ID:         generateRecordID(),
-		TaskID:     id,
-		NodeID:     nodeID,
-		Approver:   approver,
-		Result:     "approve",
-		Comment:    comment,
-		CreatedAt:  time.Now(),
+		ID:          generateRecordID(),
+		TaskID:      id,
+		NodeID:      nodeID,
+		Approver:    approver,
+		Result:      "approve",
+		Comment:     comment,
+		CreatedAt:   time.Now(),
 		Attachments: attachments,
 	}
 
@@ -730,16 +730,16 @@ func (m *dbTaskManager) ApproveWithAttachments(id string, nodeID string, approve
 	}
 
 	taskModel := &model.TaskModel{
-		ID:             tsk.ID,
-		TemplateID:     tsk.TemplateID,
+		ID:              tsk.ID,
+		TemplateID:      tsk.TemplateID,
 		TemplateVersion: tsk.TemplateVersion,
-		BusinessID:     tsk.BusinessID,
-		State:          string(tsk.State),
-		CurrentNode:    tsk.CurrentNode,
-		Data:           data,
-		CreatedAt:      tsk.CreatedAt,
-		UpdatedAt:      tsk.UpdatedAt,
-		SubmittedAt:    tsk.SubmittedAt,
+		BusinessID:      tsk.BusinessID,
+		State:           string(tsk.State),
+		CurrentNode:     tsk.CurrentNode,
+		Data:            data,
+		CreatedAt:       tsk.CreatedAt,
+		UpdatedAt:       tsk.UpdatedAt,
+		SubmittedAt:     tsk.SubmittedAt,
 	}
 
 	if err := m.db.Model(&model.TaskModel{}).Where("id = ?", id).Updates(taskModel).Error; err != nil {
@@ -816,13 +816,13 @@ func (m *dbTaskManager) Reject(id string, nodeID string, approver string, commen
 
 	// 6. 生成审批记录
 	record := &task.Record{
-		ID:         generateRecordID(),
-		TaskID:     id,
-		NodeID:     nodeID,
-		Approver:   approver,
-		Result:     "reject",
-		Comment:    comment,
-		CreatedAt:  time.Now(),
+		ID:          generateRecordID(),
+		TaskID:      id,
+		NodeID:      nodeID,
+		Approver:    approver,
+		Result:      "reject",
+		Comment:     comment,
+		CreatedAt:   time.Now(),
 		Attachments: []string{},
 	}
 
@@ -871,16 +871,16 @@ func (m *dbTaskManager) Reject(id string, nodeID string, approver string, commen
 	}
 
 	taskModel := &model.TaskModel{
-		ID:             tsk.ID,
-		TemplateID:     tsk.TemplateID,
+		ID:              tsk.ID,
+		TemplateID:      tsk.TemplateID,
 		TemplateVersion: tsk.TemplateVersion,
-		BusinessID:     tsk.BusinessID,
-		State:          string(tsk.State),
-		CurrentNode:    tsk.CurrentNode,
-		Data:           data,
-		CreatedAt:      tsk.CreatedAt,
-		UpdatedAt:      tsk.UpdatedAt,
-		SubmittedAt:    tsk.SubmittedAt,
+		BusinessID:      tsk.BusinessID,
+		State:           string(tsk.State),
+		CurrentNode:     tsk.CurrentNode,
+		Data:            data,
+		CreatedAt:       tsk.CreatedAt,
+		UpdatedAt:       tsk.UpdatedAt,
+		SubmittedAt:     tsk.SubmittedAt,
 	}
 
 	if err := m.db.Model(&model.TaskModel{}).Where("id = ?", id).Updates(taskModel).Error; err != nil {
@@ -960,13 +960,13 @@ func (m *dbTaskManager) RejectWithAttachments(id string, nodeID string, approver
 
 	// 6. 生成审批记录
 	record := &task.Record{
-		ID:         generateRecordID(),
-		TaskID:     id,
-		NodeID:     nodeID,
-		Approver:   approver,
-		Result:     "reject",
-		Comment:    comment,
-		CreatedAt:  time.Now(),
+		ID:          generateRecordID(),
+		TaskID:      id,
+		NodeID:      nodeID,
+		Approver:    approver,
+		Result:      "reject",
+		Comment:     comment,
+		CreatedAt:   time.Now(),
 		Attachments: attachments,
 	}
 
@@ -1015,16 +1015,16 @@ func (m *dbTaskManager) RejectWithAttachments(id string, nodeID string, approver
 	}
 
 	taskModel := &model.TaskModel{
-		ID:             tsk.ID,
-		TemplateID:     tsk.TemplateID,
+		ID:              tsk.ID,
+		TemplateID:      tsk.TemplateID,
 		TemplateVersion: tsk.TemplateVersion,
-		BusinessID:     tsk.BusinessID,
-		State:          string(tsk.State),
-		CurrentNode:    tsk.CurrentNode,
-		Data:           data,
-		CreatedAt:      tsk.CreatedAt,
-		UpdatedAt:      tsk.UpdatedAt,
-		SubmittedAt:    tsk.SubmittedAt,
+		BusinessID:      tsk.BusinessID,
+		State:           string(tsk.State),
+		CurrentNode:     tsk.CurrentNode,
+		Data:            data,
+		CreatedAt:       tsk.CreatedAt,
+		UpdatedAt:       tsk.UpdatedAt,
+		SubmittedAt:     tsk.SubmittedAt,
 	}
 
 	if err := m.db.Model(&model.TaskModel{}).Where("id = ?", id).Updates(taskModel).Error; err != nil {
@@ -1071,16 +1071,16 @@ func (m *dbTaskManager) Cancel(id string, reason string) error {
 
 	// 6. 更新数据库
 	taskModel := &model.TaskModel{
-		ID:             newTask.ID,
-		TemplateID:     newTask.TemplateID,
+		ID:              newTask.ID,
+		TemplateID:      newTask.TemplateID,
 		TemplateVersion: newTask.TemplateVersion,
-		BusinessID:     newTask.BusinessID,
-		State:          string(newTask.State),
-		CurrentNode:    newTask.CurrentNode,
-		Data:           data,
-		CreatedAt:      newTask.CreatedAt,
-		UpdatedAt:      newTask.UpdatedAt,
-		SubmittedAt:    newTask.SubmittedAt,
+		BusinessID:      newTask.BusinessID,
+		State:           string(newTask.State),
+		CurrentNode:     newTask.CurrentNode,
+		Data:            data,
+		CreatedAt:       newTask.CreatedAt,
+		UpdatedAt:       newTask.UpdatedAt,
+		SubmittedAt:     newTask.SubmittedAt,
 	}
 
 	if err := m.db.Model(&model.TaskModel{}).Where("id = ?", id).Updates(taskModel).Error; err != nil {
@@ -1138,16 +1138,16 @@ func (m *dbTaskManager) Withdraw(id string, reason string) error {
 	}
 
 	taskModel := &model.TaskModel{
-		ID:             newTask.ID,
-		TemplateID:     newTask.TemplateID,
+		ID:              newTask.ID,
+		TemplateID:      newTask.TemplateID,
 		TemplateVersion: newTask.TemplateVersion,
-		BusinessID:     newTask.BusinessID,
-		State:          string(newTask.State),
-		CurrentNode:    newTask.CurrentNode,
-		Data:           data,
-		CreatedAt:      newTask.CreatedAt,
-		UpdatedAt:      newTask.UpdatedAt,
-		SubmittedAt:    newTask.SubmittedAt,
+		BusinessID:      newTask.BusinessID,
+		State:           string(newTask.State),
+		CurrentNode:     newTask.CurrentNode,
+		Data:            data,
+		CreatedAt:       newTask.CreatedAt,
+		UpdatedAt:       newTask.UpdatedAt,
+		SubmittedAt:     newTask.SubmittedAt,
 	}
 
 	if err := m.db.Model(&model.TaskModel{}).Where("id = ?", id).Updates(taskModel).Error; err != nil {
@@ -1248,13 +1248,13 @@ func (m *dbTaskManager) Transfer(id string, nodeID string, fromApprover string, 
 
 	// 10. 生成转交记录
 	record := &task.Record{
-		ID:         generateRecordID(),
-		TaskID:     id,
-		NodeID:     nodeID,
-		Approver:   fromApprover,
-		Result:     "transfer",
-		Comment:    reason,
-		CreatedAt:  time.Now(),
+		ID:          generateRecordID(),
+		TaskID:      id,
+		NodeID:      nodeID,
+		Approver:    fromApprover,
+		Result:      "transfer",
+		Comment:     reason,
+		CreatedAt:   time.Now(),
 		Attachments: []string{},
 	}
 
@@ -1271,16 +1271,16 @@ func (m *dbTaskManager) Transfer(id string, nodeID string, fromApprover string, 
 	}
 
 	taskModel := &model.TaskModel{
-		ID:             tsk.ID,
-		TemplateID:     tsk.TemplateID,
+		ID:              tsk.ID,
+		TemplateID:      tsk.TemplateID,
 		TemplateVersion: tsk.TemplateVersion,
-		BusinessID:     tsk.BusinessID,
-		State:          string(tsk.State),
-		CurrentNode:    tsk.CurrentNode,
-		Data:           data,
-		CreatedAt:      tsk.CreatedAt,
-		UpdatedAt:      tsk.UpdatedAt,
-		SubmittedAt:    tsk.SubmittedAt,
+		BusinessID:      tsk.BusinessID,
+		State:           string(tsk.State),
+		CurrentNode:     tsk.CurrentNode,
+		Data:            data,
+		CreatedAt:       tsk.CreatedAt,
+		UpdatedAt:       tsk.UpdatedAt,
+		SubmittedAt:     tsk.SubmittedAt,
 	}
 
 	if err := m.db.Model(&model.TaskModel{}).Where("id = ?", id).Updates(taskModel).Error; err != nil {
@@ -1358,13 +1358,13 @@ func (m *dbTaskManager) AddApprover(id string, nodeID string, approver string, r
 
 	// 8. 生成加签记录
 	record := &task.Record{
-		ID:         generateRecordID(),
-		TaskID:     id,
-		NodeID:     nodeID,
-		Approver:   approver,
-		Result:     "add_approver",
-		Comment:    reason,
-		CreatedAt:  time.Now(),
+		ID:          generateRecordID(),
+		TaskID:      id,
+		NodeID:      nodeID,
+		Approver:    approver,
+		Result:      "add_approver",
+		Comment:     reason,
+		CreatedAt:   time.Now(),
 		Attachments: []string{},
 	}
 
@@ -1381,16 +1381,16 @@ func (m *dbTaskManager) AddApprover(id string, nodeID string, approver string, r
 	}
 
 	taskModel := &model.TaskModel{
-		ID:             tsk.ID,
-		TemplateID:     tsk.TemplateID,
+		ID:              tsk.ID,
+		TemplateID:      tsk.TemplateID,
 		TemplateVersion: tsk.TemplateVersion,
-		BusinessID:     tsk.BusinessID,
-		State:          string(tsk.State),
-		CurrentNode:    tsk.CurrentNode,
-		Data:           data,
-		CreatedAt:      tsk.CreatedAt,
-		UpdatedAt:      tsk.UpdatedAt,
-		SubmittedAt:    tsk.SubmittedAt,
+		BusinessID:      tsk.BusinessID,
+		State:           string(tsk.State),
+		CurrentNode:     tsk.CurrentNode,
+		Data:            data,
+		CreatedAt:       tsk.CreatedAt,
+		UpdatedAt:       tsk.UpdatedAt,
+		SubmittedAt:     tsk.SubmittedAt,
 	}
 
 	if err := m.db.Model(&model.TaskModel{}).Where("id = ?", id).Updates(taskModel).Error; err != nil {
@@ -1479,13 +1479,13 @@ func (m *dbTaskManager) RemoveApprover(id string, nodeID string, approver string
 
 	// 10. 生成减签记录
 	record := &task.Record{
-		ID:         generateRecordID(),
-		TaskID:     id,
-		NodeID:     nodeID,
-		Approver:   approver,
-		Result:     "remove_approver",
-		Comment:    reason,
-		CreatedAt:  time.Now(),
+		ID:          generateRecordID(),
+		TaskID:      id,
+		NodeID:      nodeID,
+		Approver:    approver,
+		Result:      "remove_approver",
+		Comment:     reason,
+		CreatedAt:   time.Now(),
 		Attachments: []string{},
 	}
 
@@ -1502,16 +1502,16 @@ func (m *dbTaskManager) RemoveApprover(id string, nodeID string, approver string
 	}
 
 	taskModel := &model.TaskModel{
-		ID:             tsk.ID,
-		TemplateID:     tsk.TemplateID,
+		ID:              tsk.ID,
+		TemplateID:      tsk.TemplateID,
 		TemplateVersion: tsk.TemplateVersion,
-		BusinessID:     tsk.BusinessID,
-		State:          string(tsk.State),
-		CurrentNode:    tsk.CurrentNode,
-		Data:           data,
-		CreatedAt:      tsk.CreatedAt,
-		UpdatedAt:      tsk.UpdatedAt,
-		SubmittedAt:    tsk.SubmittedAt,
+		BusinessID:      tsk.BusinessID,
+		State:           string(tsk.State),
+		CurrentNode:     tsk.CurrentNode,
+		Data:            data,
+		CreatedAt:       tsk.CreatedAt,
+		UpdatedAt:       tsk.UpdatedAt,
+		SubmittedAt:     tsk.SubmittedAt,
 	}
 
 	if err := m.db.Model(&model.TaskModel{}).Where("id = ?", id).Updates(taskModel).Error; err != nil {
@@ -1733,16 +1733,16 @@ func (m *dbTaskManager) HandleTimeout(id string) error {
 	}
 
 	taskModel := &model.TaskModel{
-		ID:             newTask.ID,
-		TemplateID:     newTask.TemplateID,
+		ID:              newTask.ID,
+		TemplateID:      newTask.TemplateID,
 		TemplateVersion: newTask.TemplateVersion,
-		BusinessID:     newTask.BusinessID,
-		State:          string(newTask.State),
-		CurrentNode:    newTask.CurrentNode,
-		Data:           data,
-		CreatedAt:      newTask.CreatedAt,
-		UpdatedAt:      newTask.UpdatedAt,
-		SubmittedAt:    newTask.SubmittedAt,
+		BusinessID:      newTask.BusinessID,
+		State:           string(newTask.State),
+		CurrentNode:     newTask.CurrentNode,
+		Data:            data,
+		CreatedAt:       newTask.CreatedAt,
+		UpdatedAt:       newTask.UpdatedAt,
+		SubmittedAt:     newTask.SubmittedAt,
 	}
 
 	if err := m.db.Model(&model.TaskModel{}).Where("id = ?", id).Updates(taskModel).Error; err != nil {
@@ -1799,16 +1799,16 @@ func (m *dbTaskManager) Pause(id string, reason string) error {
 	}
 
 	taskModel := &model.TaskModel{
-		ID:             newTask.ID,
-		TemplateID:     newTask.TemplateID,
+		ID:              newTask.ID,
+		TemplateID:      newTask.TemplateID,
 		TemplateVersion: newTask.TemplateVersion,
-		BusinessID:     newTask.BusinessID,
-		State:          string(newTask.State),
-		CurrentNode:    newTask.CurrentNode,
-		Data:           data,
-		CreatedAt:      newTask.CreatedAt,
-		UpdatedAt:      newTask.UpdatedAt,
-		SubmittedAt:    newTask.SubmittedAt,
+		BusinessID:      newTask.BusinessID,
+		State:           string(newTask.State),
+		CurrentNode:     newTask.CurrentNode,
+		Data:            data,
+		CreatedAt:       newTask.CreatedAt,
+		UpdatedAt:       newTask.UpdatedAt,
+		SubmittedAt:     newTask.SubmittedAt,
 	}
 
 	if err := m.db.Model(&model.TaskModel{}).Where("id = ?", id).Updates(taskModel).Error; err != nil {
@@ -1873,16 +1873,16 @@ func (m *dbTaskManager) Resume(id string, reason string) error {
 	}
 
 	taskModel := &model.TaskModel{
-		ID:             newTask.ID,
-		TemplateID:     newTask.TemplateID,
+		ID:              newTask.ID,
+		TemplateID:      newTask.TemplateID,
 		TemplateVersion: newTask.TemplateVersion,
-		BusinessID:     newTask.BusinessID,
-		State:          string(newTask.State),
-		CurrentNode:    newTask.CurrentNode,
-		Data:           data,
-		CreatedAt:      newTask.CreatedAt,
-		UpdatedAt:      newTask.UpdatedAt,
-		SubmittedAt:    newTask.SubmittedAt,
+		BusinessID:      newTask.BusinessID,
+		State:           string(newTask.State),
+		CurrentNode:     newTask.CurrentNode,
+		Data:            data,
+		CreatedAt:       newTask.CreatedAt,
+		UpdatedAt:       newTask.UpdatedAt,
+		SubmittedAt:     newTask.SubmittedAt,
 	}
 
 	if err := m.db.Model(&model.TaskModel{}).Where("id = ?", id).Updates(taskModel).Error; err != nil {
@@ -1996,8 +1996,6 @@ func (m *dbTaskManager) RollbackToNode(id string, nodeID string, reason string) 
 		targetState = types.TaskStatePending
 	case template.NodeTypeApproval:
 		targetState = types.TaskStateApproving
-	case template.NodeTypeCondition:
-		targetState = types.TaskStateApproving
 	case template.NodeTypeEnd:
 		return fmt.Errorf("cannot rollback to end node")
 	default:
@@ -2007,12 +2005,12 @@ func (m *dbTaskManager) RollbackToNode(id string, nodeID string, reason string) 
 	// 11. 更新任务状态
 	// 回退操作允许从终态回退,所以需要特殊处理
 	currentState := tsk.State
-	
+
 	// 如果当前是终态(approved/rejected/cancelled/timeout),允许回退
 	// 这种情况下不通过状态机,直接设置状态
-	if currentState == types.TaskStateApproved || 
-		currentState == types.TaskStateRejected || 
-		currentState == types.TaskStateCancelled || 
+	if currentState == types.TaskStateApproved ||
+		currentState == types.TaskStateRejected ||
+		currentState == types.TaskStateCancelled ||
 		currentState == types.TaskStateTimeout {
 		tsk.State = targetState
 		// 添加状态变更记录
@@ -2048,16 +2046,16 @@ func (m *dbTaskManager) RollbackToNode(id string, nodeID string, reason string) 
 	}
 
 	taskModel := &model.TaskModel{
-		ID:             tsk.ID,
-		TemplateID:     tsk.TemplateID,
+		ID:              tsk.ID,
+		TemplateID:      tsk.TemplateID,
 		TemplateVersion: tsk.TemplateVersion,
-		BusinessID:     tsk.BusinessID,
-		State:          string(tsk.State),
-		CurrentNode:    tsk.CurrentNode,
-		Data:           data,
-		CreatedAt:      tsk.CreatedAt,
-		UpdatedAt:      tsk.UpdatedAt,
-		SubmittedAt:    tsk.SubmittedAt,
+		BusinessID:      tsk.BusinessID,
+		State:           string(tsk.State),
+		CurrentNode:     tsk.CurrentNode,
+		Data:            data,
+		CreatedAt:       tsk.CreatedAt,
+		UpdatedAt:       tsk.UpdatedAt,
+		SubmittedAt:     tsk.SubmittedAt,
 	}
 
 	if err := m.db.Model(&model.TaskModel{}).Where("id = ?", id).Updates(taskModel).Error; err != nil {
@@ -2162,13 +2160,13 @@ func (m *dbTaskManager) ReplaceApprover(id string, nodeID string, oldApprover st
 
 	// 9. 生成替换审批人记录
 	record := &task.Record{
-		ID:         generateRecordID(),
-		TaskID:     id,
-		NodeID:     nodeID,
-		Approver:   oldApprover,
-		Result:     "replace",
-		Comment:    fmt.Sprintf("替换为 %s: %s", newApprover, reason),
-		CreatedAt:  time.Now(),
+		ID:          generateRecordID(),
+		TaskID:      id,
+		NodeID:      nodeID,
+		Approver:    oldApprover,
+		Result:      "replace",
+		Comment:     fmt.Sprintf("替换为 %s: %s", newApprover, reason),
+		CreatedAt:   time.Now(),
 		Attachments: []string{},
 	}
 
@@ -2185,16 +2183,16 @@ func (m *dbTaskManager) ReplaceApprover(id string, nodeID string, oldApprover st
 	}
 
 	taskModel := &model.TaskModel{
-		ID:             tsk.ID,
-		TemplateID:     tsk.TemplateID,
+		ID:              tsk.ID,
+		TemplateID:      tsk.TemplateID,
 		TemplateVersion: tsk.TemplateVersion,
-		BusinessID:     tsk.BusinessID,
-		State:          string(tsk.State),
-		CurrentNode:    tsk.CurrentNode,
-		Data:           data,
-		CreatedAt:      tsk.CreatedAt,
-		UpdatedAt:      tsk.UpdatedAt,
-		SubmittedAt:    tsk.SubmittedAt,
+		BusinessID:      tsk.BusinessID,
+		State:           string(tsk.State),
+		CurrentNode:     tsk.CurrentNode,
+		Data:            data,
+		CreatedAt:       tsk.CreatedAt,
+		UpdatedAt:       tsk.UpdatedAt,
+		SubmittedAt:     tsk.SubmittedAt,
 	}
 
 	if err := m.db.Model(&model.TaskModel{}).Where("id = ?", id).Updates(taskModel).Error; err != nil {
@@ -2208,4 +2206,3 @@ func (m *dbTaskManager) ReplaceApprover(id string, nodeID string, oldApprover st
 
 	return nil
 }
-

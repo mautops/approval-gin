@@ -282,18 +282,30 @@ func (s *templateService) Update(ctx context.Context, id string, req *UpdateTemp
 
 // Delete 删除模板
 func (s *templateService) Delete(ctx context.Context, id string) error {
-	// 1. 获取模板信息（用于审计日志）
+	// 1. 检查是否有关联的审批任务
+	var taskCount int64
+	if err := s.db.Model(&model.TaskModel{}).
+		Where("template_id = ?", id).
+		Count(&taskCount).Error; err != nil {
+		return fmt.Errorf("failed to check related tasks: %w", err)
+	}
+
+	if taskCount > 0 {
+		return fmt.Errorf("无法删除模板: 该模板下还有 %d 个审批任务", taskCount)
+	}
+
+	// 2. 获取模板信息（用于审计日志）
 	template, _ := s.templateMgr.Get(id, 0)
 
-	// 2. 清除缓存
+	// 3. 清除缓存
 	s.clearTemplateCache(id, 0) // 清除所有版本的缓存
 
-	// 3. 删除模板
+	// 4. 删除模板
 	if err := s.templateMgr.Delete(id); err != nil {
 		return err
 	}
 
-	// 4. 记录审计日志
+	// 5. 记录审计日志
 	if s.auditLogSvc != nil {
 		userID := getUserIDFromContext(ctx)
 		if userID != "" {

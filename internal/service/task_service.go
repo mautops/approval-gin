@@ -3,10 +3,12 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/mautops/approval-gin/internal/auth"
 	"github.com/mautops/approval-gin/internal/metrics"
+	"github.com/mautops/approval-gin/internal/model"
 	"github.com/mautops/approval-kit/pkg/task"
 	"gorm.io/gorm"
 )
@@ -29,6 +31,7 @@ type TaskService interface {
 	RollbackToNode(ctx context.Context, id string, req *RollbackRequest) error
 	ReplaceApprover(ctx context.Context, id string, req *ReplaceApproverRequest) error
 	HandleTimeout(ctx context.Context, id string) error
+	Delete(ctx context.Context, id string) error
 	// 批量操作方法
 	BatchApprove(ctx context.Context, req *BatchApproveRequest) ([]BatchOperationResult, error)
 	BatchTransfer(ctx context.Context, req *BatchTransferRequest) ([]BatchOperationResult, error)
@@ -58,20 +61,19 @@ type RejectRequest struct {
 	Attachments []string `json:"attachments" example:"[\"file1.pdf\",\"file2.pdf\"]"` // 附件列表
 }
 
-// TransferRequest 转交审批请求
+// TransferRequest 转交请求
 // @Description 转交审批的请求参数
 type TransferRequest struct {
 	NodeID      string `json:"node_id" example:"node-001" binding:"required"` // 节点 ID
-	FromApprover string `json:"from_approver" example:"user-001" binding:"required"` // 原审批人 ID
-	ToApprover   string `json:"to_approver" example:"user-002" binding:"required"` // 新审批人 ID
-	Reason       string `json:"reason" example:"转交原因"` // 转交原因
+	ToApprover  string `json:"to_approver" example:"user-002" binding:"required"` // 新审批人 ID
+	Reason      string `json:"reason" example:"转交原因"` // 转交原因
 }
 
 // AddApproverRequest 加签请求
 // @Description 加签的请求参数
 type AddApproverRequest struct {
 	NodeID   string `json:"node_id" example:"node-001" binding:"required"` // 节点 ID
-	Approver string `json:"approver" example:"user-002" binding:"required"` // 新审批人 ID
+	Approver string `json:"approver" example:"user-003" binding:"required"` // 新审批人 ID
 	Reason   string `json:"reason" example:"加签原因"` // 加签原因
 }
 
@@ -79,7 +81,7 @@ type AddApproverRequest struct {
 // @Description 减签的请求参数
 type RemoveApproverRequest struct {
 	NodeID   string `json:"node_id" example:"node-001" binding:"required"` // 节点 ID
-	Approver string `json:"approver" example:"user-001" binding:"required"` // 要移除的审批人 ID
+	Approver string `json:"approver" example:"user-003" binding:"required"` // 要移除的审批人 ID
 	Reason   string `json:"reason" example:"减签原因"` // 减签原因
 }
 
@@ -102,30 +104,29 @@ type ReplaceApproverRequest struct {
 // BatchApproveRequest 批量审批请求
 // @Description 批量审批的请求参数
 type BatchApproveRequest struct {
-	TaskIDs []string `json:"task_ids" binding:"required,min=1"` // 任务 ID 列表
-	NodeID  string   `json:"node_id" binding:"required"`        // 节点 ID
-	Comment string   `json:"comment"`                          // 审批意见
+	TaskIDs []string `json:"task_ids" binding:"required"` // 任务 ID 列表
+	NodeID  string   `json:"node_id" binding:"required"` // 节点 ID
+	Comment string   `json:"comment"` // 审批意见
 }
 
 // BatchTransferRequest 批量转交请求
 // @Description 批量转交的请求参数
 type BatchTransferRequest struct {
-	TaskIDs     []string `json:"task_ids" binding:"required,min=1"` // 任务 ID 列表
-	NodeID      string   `json:"node_id" binding:"required"`         // 节点 ID
-	OldApprover string   `json:"old_approver" binding:"required"`   // 原审批人 ID
-	NewApprover string   `json:"new_approver" binding:"required"`   // 新审批人 ID
-	Comment     string   `json:"comment"`                            // 转交说明
+	TaskIDs     []string `json:"task_ids" binding:"required"` // 任务 ID 列表
+	NodeID      string   `json:"node_id" binding:"required"` // 节点 ID
+	OldApprover string   `json:"old_approver" binding:"required"` // 原审批人 ID
+	NewApprover string   `json:"new_approver" binding:"required"` // 新审批人 ID
+	Comment     string   `json:"comment"` // 转交原因
 }
 
 // BatchOperationResult 批量操作结果
-// @Description 批量操作的结果项
+// @Description 批量操作的结果
 type BatchOperationResult struct {
-	TaskID  string `json:"task_id"`  // 任务 ID
-	Success bool   `json:"success"`  // 是否成功
+	TaskID  string `json:"task_id"` // 任务 ID
+	Success bool   `json:"success"` // 是否成功
 	Error   string `json:"error,omitempty"` // 错误信息(如果失败)
 }
 
-// taskService 任务服务实现
 type taskService struct {
 	taskMgr    task.TaskManager
 	db         *gorm.DB
@@ -167,15 +168,10 @@ func (s *taskService) Create(ctx context.Context, req *CreateTaskRequest) (*task
 		}
 	}
 
-	// 设置权限关系（如果有 OpenFGA 客户端和用户ID）
-	// 注意: 用户ID需要从 context 中获取，这里暂时跳过
-	// 后续在 API 层从 context 获取用户ID并设置权限关系
-	_ = s.fgaClient
-
 	return task, nil
 }
 
-// Get 获取任务
+// Get 获取任务详情
 func (s *taskService) Get(id string) (*task.Task, error) {
 	return s.taskMgr.Get(id)
 }
@@ -200,18 +196,16 @@ func (s *taskService) Submit(ctx context.Context, id string) error {
 
 // Approve 审批同意
 func (s *taskService) Approve(ctx context.Context, id string, req *ApproveRequest) error {
-	var err error
+	// 根据是否有附件选择不同的方法
 	if len(req.Attachments) > 0 {
-		err = s.taskMgr.ApproveWithAttachments(id, req.NodeID, "", req.Comment, req.Attachments)
+		if err := s.taskMgr.ApproveWithAttachments(id, req.NodeID, getUserIDFromContext(ctx), req.Comment, req.Attachments); err != nil {
+			return err
+		}
 	} else {
-		err = s.taskMgr.Approve(id, req.NodeID, "", req.Comment)
+		if err := s.taskMgr.Approve(id, req.NodeID, getUserIDFromContext(ctx), req.Comment); err != nil {
+			return err
+		}
 	}
-	if err != nil {
-		return err
-	}
-
-	// 记录业务指标
-	metrics.RecordApproval("approve")
 
 	// 记录审计日志
 	if s.auditLogSvc != nil {
@@ -227,18 +221,16 @@ func (s *taskService) Approve(ctx context.Context, id string, req *ApproveReques
 
 // Reject 审批拒绝
 func (s *taskService) Reject(ctx context.Context, id string, req *RejectRequest) error {
-	var err error
+	// 根据是否有附件选择不同的方法
 	if len(req.Attachments) > 0 {
-		err = s.taskMgr.RejectWithAttachments(id, req.NodeID, "", req.Comment, req.Attachments)
+		if err := s.taskMgr.RejectWithAttachments(id, req.NodeID, getUserIDFromContext(ctx), req.Comment, req.Attachments); err != nil {
+			return err
+		}
 	} else {
-		err = s.taskMgr.Reject(id, req.NodeID, "", req.Comment)
+		if err := s.taskMgr.Reject(id, req.NodeID, getUserIDFromContext(ctx), req.Comment); err != nil {
+			return err
+		}
 	}
-	if err != nil {
-		return err
-	}
-
-	// 记录业务指标
-	metrics.RecordApproval("reject")
 
 	// 记录审计日志
 	if s.auditLogSvc != nil {
@@ -290,15 +282,15 @@ func (s *taskService) Withdraw(ctx context.Context, id string, reason string) er
 
 // Transfer 转交审批
 func (s *taskService) Transfer(ctx context.Context, id string, req *TransferRequest) error {
-	if err := s.taskMgr.Transfer(id, req.NodeID, req.FromApprover, req.ToApprover, req.Reason); err != nil {
+	userID := getUserIDFromContext(ctx)
+	if err := s.taskMgr.Transfer(id, req.NodeID, userID, req.ToApprover, req.Reason); err != nil {
 		return err
 	}
 
 	// 记录审计日志
 	if s.auditLogSvc != nil {
-		userID := getUserIDFromContext(ctx)
 		if userID != "" {
-			details := fmt.Sprintf(`{"task_id":"%s","node_id":"%s","from_approver":"%s","to_approver":"%s","reason":"%s"}`, id, req.NodeID, req.FromApprover, req.ToApprover, req.Reason)
+			details := fmt.Sprintf(`{"task_id":"%s","node_id":"%s","to_approver":"%s","reason":"%s"}`, id, req.NodeID, req.ToApprover, req.Reason)
 			_ = s.auditLogSvc.RecordAction(ctx, userID, "transfer", "task", id, details)
 		}
 	}
@@ -419,13 +411,96 @@ func (s *taskService) HandleTimeout(ctx context.Context, id string) error {
 	if err := s.taskMgr.HandleTimeout(id); err != nil {
 		return err
 	}
-
-	// 记录审计日志
 	if s.auditLogSvc != nil {
 		userID := getUserIDFromContext(ctx)
 		if userID != "" {
 			details := fmt.Sprintf(`{"task_id":"%s"}`, id)
 			_ = s.auditLogSvc.RecordAction(ctx, userID, "handle_timeout", "task", id, details)
+		}
+	}
+	return nil
+}
+
+// Delete 删除任务
+// 只允许删除特定状态的任务(pending、cancelled),且不能有审批记录
+func (s *taskService) Delete(ctx context.Context, id string) error {
+	// 1. 检查任务是否存在
+	var taskModel model.TaskModel
+	if err := s.db.Where("id = ?", id).First(&taskModel).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("task not found")
+		}
+		return fmt.Errorf("failed to get task: %w", err)
+	}
+
+	// 2. 获取任务
+	tsk, err := s.taskMgr.Get(id)
+	if err != nil {
+		// 如果 taskMgr.Get 也失败，说明数据不一致，但我们已经确认任务存在，所以返回错误
+		return fmt.Errorf("failed to get task: %w", err)
+	}
+
+	// 3. 检查任务状态,只允许删除 pending 或 cancelled 状态的任务
+	if tsk.State != "pending" && tsk.State != "cancelled" {
+		return fmt.Errorf("无法删除任务: 只能删除待审批或已取消状态的任务,当前状态为 %s", tsk.State)
+	}
+
+	// 4. 检查是否有审批记录,如果有则不允许删除
+	if len(tsk.Records) > 0 {
+		return fmt.Errorf("无法删除任务: 该任务已有 %d 条审批记录,不允许删除", len(tsk.Records))
+	}
+
+	// 5. 权限检查: 只有创建者可以删除
+	if s.fgaClient != nil {
+		userID := getUserIDFromContext(ctx)
+		if userID != "" {
+			hasPermission, err := s.fgaClient.CheckPermission(ctx, userID, "operator", "task", id)
+			if err != nil {
+				return fmt.Errorf("failed to check permission: %w", err)
+			}
+			if !hasPermission {
+				// 使用已经获取的 taskModel 中的 CreatedBy
+				if taskModel.CreatedBy != userID {
+					return fmt.Errorf("权限不足: 只有任务创建者可以删除任务")
+				}
+			}
+		}
+	}
+
+	// 6. 删除任务及相关数据(使用事务)
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		// 6.1 删除审批记录
+		if err := tx.Where("task_id = ?", id).Delete(&model.ApprovalRecordModel{}).Error; err != nil {
+			return fmt.Errorf("failed to delete approval records: %w", err)
+		}
+
+		// 6.2 删除状态历史
+		if err := tx.Where("task_id = ?", id).Delete(&model.StateHistoryModel{}).Error; err != nil {
+			return fmt.Errorf("failed to delete state history: %w", err)
+		}
+
+		// 6.3 删除事件
+		if err := tx.Where("task_id = ?", id).Delete(&model.EventModel{}).Error; err != nil {
+			return fmt.Errorf("failed to delete events: %w", err)
+		}
+
+		// 6.4 删除任务
+		if err := tx.Where("id = ?", id).Delete(&model.TaskModel{}).Error; err != nil {
+			return fmt.Errorf("failed to delete task: %w", err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	// 7. 记录审计日志
+	if s.auditLogSvc != nil {
+		userID := getUserIDFromContext(ctx)
+		if userID != "" {
+			details := fmt.Sprintf(`{"task_id":"%s","state":"%s","business_id":"%s"}`, id, tsk.State, tsk.BusinessID)
+			_ = s.auditLogSvc.RecordAction(ctx, userID, "delete", "task", id, details)
 		}
 	}
 
@@ -459,16 +534,16 @@ func (s *taskService) BatchApprove(ctx context.Context, req *BatchApproveRequest
 // BatchTransfer 批量转交
 func (s *taskService) BatchTransfer(ctx context.Context, req *BatchTransferRequest) ([]BatchOperationResult, error) {
 	results := make([]BatchOperationResult, 0, len(req.TaskIDs))
+	userID := getUserIDFromContext(ctx)
 
 	for _, taskID := range req.TaskIDs {
-		transferReq := &TransferRequest{
-			NodeID:      req.NodeID,
-			FromApprover: req.OldApprover,
-			ToApprover:  req.NewApprover,
-			Reason:      req.Comment,
+		// 使用当前用户作为 fromApprover,或者使用请求中的 OldApprover
+		fromApprover := userID
+		if req.OldApprover != "" {
+			fromApprover = req.OldApprover
 		}
 
-		err := s.Transfer(ctx, taskID, transferReq)
+		err := s.taskMgr.Transfer(taskID, req.NodeID, fromApprover, req.NewApprover, req.Comment)
 		result := BatchOperationResult{
 			TaskID:  taskID,
 			Success: err == nil,
@@ -481,4 +556,3 @@ func (s *taskService) BatchTransfer(ctx context.Context, req *BatchTransferReque
 
 	return results, nil
 }
-

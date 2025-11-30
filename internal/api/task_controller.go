@@ -1,7 +1,9 @@
 package api
 
 import (
+	"log"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mautops/approval-gin/internal/service"
@@ -537,3 +539,42 @@ func (c *TaskController) HandleTimeout(ctx *gin.Context) {
 	Success(ctx, nil)
 }
 
+// Delete 删除任务
+// @Summary      删除任务
+// @Description  删除审批任务,只允许删除待审批或已取消状态的任务,且不能有审批记录
+// @Tags         任务管理
+// @Accept       json
+// @Produce      json
+// @Param        id path string true "任务 ID"
+// @Success      200  {object}  Response
+// @Failure      400  {object}  ErrorResponse
+// @Failure      403  {object}  ErrorResponse
+// @Failure      404  {object}  ErrorResponse
+// @Failure      500  {object}  ErrorResponse
+// @Router       /tasks/{id} [delete]
+// @Security     BearerAuth
+func (c *TaskController) Delete(ctx *gin.Context) {
+	id := ctx.Param("id")
+	// 调试日志
+	log.Printf("[DEBUG] Delete method called with id: %s, path: %s", id, ctx.Request.URL.Path)
+	if !c.validateTaskID(ctx, id) {
+		return
+	}
+
+	if err := c.taskService.Delete(ctx.Request.Context(), id); err != nil {
+		// 检查是否是任务不存在的错误
+		if strings.Contains(err.Error(), "task not found") {
+			Error(ctx, http.StatusNotFound, "task not found", err.Error())
+			return
+		}
+		// 检查是否是权限或状态错误
+		if strings.Contains(err.Error(), "无法删除任务") || strings.Contains(err.Error(), "权限不足") {
+			Error(ctx, http.StatusForbidden, "无法删除任务", err.Error())
+			return
+		}
+		c.handleServiceError(ctx, err, "delete task")
+		return
+	}
+
+	Success(ctx, nil)
+}

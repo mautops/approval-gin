@@ -1,6 +1,5 @@
 /*
 Copyright © 2025 NAME HERE <EMAIL ADDRESS>
-
 */
 package cmd
 
@@ -20,7 +19,6 @@ import (
 	"github.com/mautops/approval-gin/internal/container"
 	"github.com/mautops/approval-gin/internal/repository"
 	"github.com/mautops/approval-gin/internal/service"
-	"github.com/mautops/approval-gin/internal/websocket"
 	"github.com/spf13/cobra"
 )
 
@@ -58,12 +56,8 @@ and provide REST API interfaces for approval workflow management.`,
 		queryController := api.NewQueryController(querySvc)
 		backupController := api.NewBackupController(ctr.BackupService())
 
-		// 5. 初始化 WebSocket Hub
-		hub := websocket.NewHub()
-		go hub.Run()
-
-	// 6. 设置路由
-	router := setupRoutesWithControllers(hub, ctr, templateController, taskController, queryController, backupController, cfg)
+		// 5. 设置路由
+		router := setupRoutesWithControllers(ctr, templateController, taskController, queryController, backupController, cfg)
 
 		// 7. 启动服务器
 		addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
@@ -101,7 +95,6 @@ and provide REST API interfaces for approval workflow management.`,
 
 // setupRoutesWithControllers 设置路由并绑定控制器
 func setupRoutesWithControllers(
-	hub *websocket.Hub,
 	ctr *container.Container,
 	templateController *api.TemplateController,
 	taskController *api.TaskController,
@@ -115,7 +108,7 @@ func setupRoutesWithControllers(
 	if swaggerHost == "0.0.0.0" {
 		swaggerHost = "localhost"
 	}
-	router := api.SetupRoutesWithConfig(hub, ctr.KeycloakValidator(), ctr.DB(), ctr.OpenFGAClient(), swaggerHost, cfg.Server.Port, &cfg.CORS)
+	router := api.SetupRoutesWithConfig(ctr.KeycloakValidator(), ctr.DB(), ctr.OpenFGAClient(), swaggerHost, cfg.Server.Port, &cfg.CORS)
 
 	// API v1 路由组
 	v1 := router.Group("/api/v1")
@@ -135,28 +128,36 @@ func setupRoutesWithControllers(
 		// 任务管理路由
 		tasks := v1.Group("/tasks")
 		{
+			// 批量操作路由（必须在 /:id 之前）
+			tasks.POST("/batch/approve", taskController.BatchApprove)
+			tasks.POST("/batch/transfer", taskController.BatchTransfer)
+
+			// 基础路由
 			tasks.POST("", taskController.Create)
 			tasks.GET("", queryController.ListTasks)
+
+			// 通用路由（必须在具体路径路由之前）
 			tasks.GET("/:id", taskController.Get)
+			tasks.DELETE("/:id", taskController.Delete)
+
+			// 具体路径的路由（必须在 /:id 之后，Gin 会优先匹配更长的路径）
 			tasks.POST("/:id/submit", taskController.Submit)
 			tasks.POST("/:id/approve", taskController.Approve)
 			tasks.POST("/:id/reject", taskController.Reject)
 			tasks.POST("/:id/cancel", taskController.Cancel)
 			tasks.POST("/:id/withdraw", taskController.Withdraw)
-			// 高级操作路由
 			tasks.POST("/:id/transfer", taskController.Transfer)
-			tasks.POST("/:id/approvers", taskController.AddApprover)
-			tasks.DELETE("/:id/approvers", taskController.RemoveApprover)
 			tasks.POST("/:id/pause", taskController.Pause)
 			tasks.POST("/:id/resume", taskController.Resume)
 			tasks.POST("/:id/rollback", taskController.RollbackToNode)
-			tasks.POST("/:id/approvers/replace", taskController.ReplaceApprover)
 			tasks.POST("/:id/timeout", taskController.HandleTimeout)
-			// 批量操作路由
-			tasks.POST("/batch/approve", taskController.BatchApprove)
-			tasks.POST("/batch/transfer", taskController.BatchTransfer)
 			tasks.GET("/:id/records", queryController.GetRecords)
 			tasks.GET("/:id/history", queryController.GetHistory)
+
+			// 审批人相关路由（必须在 /:id 之后，Gin 会优先匹配更长的路径）
+			tasks.POST("/:id/approvers", taskController.AddApprover)
+			tasks.POST("/:id/approvers/replace", taskController.ReplaceApprover)
+			tasks.DELETE("/:id/approvers", taskController.RemoveApprover)
 		}
 
 		// 备份管理路由
@@ -168,6 +169,12 @@ func setupRoutesWithControllers(
 			backups.DELETE("/:filename", backupController.DeleteBackup)
 		}
 	}
+
+	// 自定义 NoRoute 处理器,返回 JSON 格式的 404
+	// 必须在所有业务路由注册之后设置,确保未匹配的路由返回 JSON 而不是 HTML
+	router.NoRoute(func(c *gin.Context) {
+		api.Error(c, http.StatusNotFound, "route not found", "the requested route does not exist")
+	})
 
 	return router
 }

@@ -10,7 +10,6 @@ import (
 	"github.com/mautops/approval-gin/internal/model"
 	"github.com/mautops/approval-gin/internal/service"
 	"github.com/mautops/approval-gin/internal/utils"
-	"github.com/mautops/approval-kit/pkg/template"
 	"gorm.io/gorm"
 )
 
@@ -100,17 +99,27 @@ func (c *TemplateController) Get(ctx *gin.Context) {
 		}
 	}
 
-	template, err := c.templateService.Get(id, version)
-	if err != nil {
-		Error(ctx, http.StatusNotFound, "template not found", err.Error())
-		return
-	}
-
-	templateWithPositions := c.mergeNodePositions(template, id, version)
+	// 直接从数据库读取原始 JSON 数据，保留 position 字段
+	// 这是唯一能保留 position 字段的方法，因为 template.Template 结构体中没有 position 字段
+	templateWithPositions := c.getTemplateWithPositions(id, version)
 	if templateWithPositions == nil {
-		templateWithPositions = template
+		// 如果直接读取失败，尝试通过 service 获取模板信息（用于错误提示）
+		_, err := c.templateService.Get(id, version)
+		if err != nil {
+			Error(ctx, http.StatusNotFound, "template not found", err.Error())
+			return
+		}
+		// 如果 service 能获取到数据，说明数据库查询应该成功
+		// 重新尝试直接读取（可能是 JSON 反序列化问题）
+		templateWithPositions = c.getTemplateWithPositions(id, version)
+		if templateWithPositions == nil {
+			// 如果仍然失败，返回错误
+			Error(ctx, http.StatusInternalServerError, "failed to read template data", "无法读取模板数据")
+			return
+		}
 	}
 
+	// 直接返回包含 position 的 map，保留所有字段
 	Success(ctx, templateWithPositions)
 }
 
@@ -190,7 +199,12 @@ func (c *TemplateController) Delete(ctx *gin.Context) {
 	}
 
 	if err := c.templateService.Delete(ctx.Request.Context(), id); err != nil {
-		Error(ctx, http.StatusInternalServerError, "failed to delete template", err.Error())
+		// 检查是否是有关联任务的错误
+		if strings.Contains(err.Error(), "无法删除模板") {
+			Error(ctx, http.StatusConflict, "无法删除模板", err.Error())
+			return
+		}
+		Error(ctx, http.StatusInternalServerError, "删除模板失败", err.Error())
 		return
 	}
 
@@ -314,7 +328,8 @@ func (c *TemplateController) DeleteVersion(ctx *gin.Context) {
 	Success(ctx, nil)
 }
 
-func (c *TemplateController) mergeNodePositions(tpl *template.Template, id string, version int) *template.Template {
+// getTemplateWithPositions 直接从数据库读取模板数据，保留 position 字段
+func (c *TemplateController) getTemplateWithPositions(id string, version int) map[string]interface{} {
 	var tm model.TemplateModel
 	query := c.db.Where("id = ?", id)
 
@@ -325,49 +340,23 @@ func (c *TemplateController) mergeNodePositions(tpl *template.Template, id strin
 	}
 
 	if err := query.First(&tm).Error; err != nil {
+		// 查询失败，返回 nil
 		return nil
 	}
 
+	// 直接使用数据库中的原始 JSON 数据，保留所有字段（包括 position）
 	var templateMap map[string]interface{}
 	if err := json.Unmarshal(tm.Data, &templateMap); err != nil {
+		// JSON 反序列化失败，返回 nil
 		return nil
 	}
 
-	tplJSON, err := json.Marshal(tpl)
-	if err != nil {
+	// 验证 map 不为空
+	if len(templateMap) == 0 {
 		return nil
 	}
 
-	var tplMap map[string]interface{}
-	if err := json.Unmarshal(tplJSON, &tplMap); err != nil {
-		return nil
-	}
-
-	if nodes, ok := templateMap["nodes"].(map[string]interface{}); ok {
-		if tplNodes, ok := tplMap["nodes"].(map[string]interface{}); ok {
-			for nodeID, node := range nodes {
-				if nodeMap, ok := node.(map[string]interface{}); ok {
-					if position, ok := nodeMap["position"]; ok {
-						if tplNode, exists := tplNodes[nodeID]; exists {
-							if tplNodeMap, ok := tplNode.(map[string]interface{}); ok {
-								tplNodeMap["position"] = position
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	resultJSON, err := json.Marshal(tplMap)
-	if err != nil {
-		return nil
-	}
-
-	var result template.Template
-	if err := json.Unmarshal(resultJSON, &result); err != nil {
-		return nil
-	}
-
-	return &result
+	// 返回包含 position 的原始 map，而不是反序列化为 template.Template
+	// 这样可以保留 position 字段，因为 template.Template 结构体中没有 position 字段
+	return templateMap
 }

@@ -47,53 +47,50 @@ func (m *DBTemplateManager) Create(tpl *template.Template) error {
 }
 
 func (m *DBTemplateManager) CreateWithNodePositions(tpl *template.Template, rawNodesJSON json.RawMessage) error {
-	data, err := json.Marshal(tpl)
-	if err != nil {
-		return fmt.Errorf("failed to marshal template: %w", err)
-	}
-
+	// 如果提供了原始节点 JSON，直接使用它来构建模板数据（保留 position 信息）
 	if len(rawNodesJSON) > 0 {
-		var templateMap map[string]interface{}
-		if err := json.Unmarshal(data, &templateMap); err != nil {
-			return fmt.Errorf("failed to unmarshal template: %w", err)
-		}
-
+		// 解析原始节点 JSON
 		var rawNodesMap map[string]interface{}
 		if err := json.Unmarshal(rawNodesJSON, &rawNodesMap); err != nil {
 			return fmt.Errorf("failed to unmarshal raw nodes: %w", err)
 		}
 
-		if nodes, ok := templateMap["nodes"].(map[string]interface{}); ok {
-			for nodeID, rawNode := range rawNodesMap {
-				if rawNodeMap, ok := rawNode.(map[string]interface{}); ok {
-					if position, ok := rawNodeMap["position"]; ok {
-						if node, exists := nodes[nodeID]; exists {
-							if nodeMap, ok := node.(map[string]interface{}); ok {
-								nodeMap["position"] = position
-							}
-						}
-					}
-				}
-			}
+		// 将模板对象序列化为 map，以便合并节点数据
+		templateData, err := json.Marshal(tpl)
+		if err != nil {
+			return fmt.Errorf("failed to marshal template: %w", err)
 		}
 
-		data, err = json.Marshal(templateMap)
+		var templateMap map[string]interface{}
+		if err := json.Unmarshal(templateData, &templateMap); err != nil {
+			return fmt.Errorf("failed to unmarshal template: %w", err)
+		}
+
+		// 直接使用原始节点 JSON 替换模板中的 nodes（保留 position 信息）
+		// 这样可以确保 position 字段被正确保存
+		templateMap["nodes"] = rawNodesMap
+
+		// 重新序列化模板数据
+		data, err := json.Marshal(templateMap)
 		if err != nil {
 			return fmt.Errorf("failed to remarshal template: %w", err)
 		}
+
+		model := &model.TemplateModel{
+			ID:          tpl.ID,
+			Name:        tpl.Name,
+			Description: tpl.Description,
+			Version:     tpl.Version,
+			Data:        data,
+			CreatedAt:   tpl.CreatedAt,
+			UpdatedAt:   tpl.UpdatedAt,
+		}
+
+		return m.db.Create(model).Error
 	}
 
-	model := &model.TemplateModel{
-		ID:          tpl.ID,
-		Name:        tpl.Name,
-		Description: tpl.Description,
-		Version:     tpl.Version,
-		Data:        data,
-		CreatedAt:   tpl.CreatedAt,
-		UpdatedAt:   tpl.UpdatedAt,
-	}
-
-	return m.db.Create(model).Error
+	// 如果没有提供原始节点 JSON，使用标准创建方法
+	return m.Create(tpl)
 }
 
 func (m *DBTemplateManager) UpdateWithNodePositions(id string, tpl *template.Template, rawNodesJSON json.RawMessage) error {
